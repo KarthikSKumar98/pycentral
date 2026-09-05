@@ -7,6 +7,10 @@ from requests.auth import HTTPBasicAuth
 from oauthlib.oauth2 import BackendApplicationClient
 import json
 import time
+import threading
+import math
+from contextlib import contextmanager
+from functools import wraps
 from .utils.base_utils import (
     build_url,
     new_parse_input_args,
@@ -31,8 +35,27 @@ TRANSIENT_TRANSPORT_ERRORS = (
 )
 
 
+def _admitted_operation(method):
+    """Wrap an I/O entry point in the connection lifecycle admission guard."""
+    @wraps(method)
+    def wrapper(self, *args, **kwargs):
+        with self._operation():
+            return method(self, *args, **kwargs)
+    return wrapper
+
+
 class NewCentralBase:
-    def __init__(self, token_info, logger=None, log_level="INFO", enable_scope=False):
+    def __init__(
+        self,
+        token_info,
+        logger=None,
+        log_level="INFO",
+        enable_scope=False,
+        rest_timeout=30.0,
+        rest_connect_timeout=10.0,
+        auth_timeout=30.0,
+        auth_connect_timeout=10.0,
+    ):
         """
         Constructor initializes the NewCentralBase class with token information and logging configuration.
 
@@ -49,19 +72,94 @@ class NewCentralBase:
                 will automatically fetch data about existing scopes and associated profiles,
                 simplifying scope and configuration management. If False, scope-related API
                 calls are disabled, resulting in faster initialization. Defaults to False.
+            rest_timeout (float, optional): Per-I/O REST timeout in seconds. Defaults to 30.
+            rest_connect_timeout (float, optional): REST connect timeout in seconds.
+                Defaults to 10.
+            auth_timeout (float, optional): Per-I/O token request timeout in seconds.
+                Defaults to 30.
+            auth_connect_timeout (float, optional): Token request connect timeout in
+                seconds. Defaults to 10.
         """
         self.token_info = new_parse_input_args(token_info)
         self.token_file_path = None
         if isinstance(token_info, str):
             self.token_file_path = token_info
         self.logger = self.set_logger(log_level, logger)
+        self._set_timeouts(
+            rest_timeout, rest_connect_timeout, auth_timeout, auth_connect_timeout
+        )
+        self._initialize_connection_state()
         self._app_routes = self._build_app_routes()
         self.scopes = None
-        self._http_clients = {}
         self._initialize_http_clients()
         self._initialize_tokens()
         if enable_scope:
             self.scopes = Scopes(central_conn=self)
+
+    def _set_timeouts(
+        self, rest_timeout, rest_connect_timeout, auth_timeout, auth_connect_timeout
+    ):
+        """Validate and store per-I/O REST and authentication timeouts."""
+        values = {
+            "rest_timeout": rest_timeout,
+            "rest_connect_timeout": rest_connect_timeout,
+            "auth_timeout": auth_timeout,
+            "auth_connect_timeout": auth_connect_timeout,
+        }
+        for name, value in values.items():
+            if (
+                not isinstance(value, (int, float))
+                or isinstance(value, bool)
+                or not math.isfinite(value)
+                or value <= 0
+            ):
+                raise ValueError(f"{name} must be a positive number.")
+        self._rest_timeout = rest_timeout
+        self._rest_connect_timeout = rest_connect_timeout
+        self._auth_timeout = auth_timeout
+        self._auth_connect_timeout = auth_connect_timeout
+
+    def _initialize_connection_state(self):
+        """Initialize synchronization shared by requests, refreshes, and close."""
+        self._operation_condition = threading.Condition()
+        self._operation_local = threading.local()
+        self._active_operations = 0
+        self._lifecycle_state = "open"
+        self._http_clients = {}
+        self._http_clients_lock = threading.Lock()
+        self._token_locks = {}
+        self._token_locks_lock = threading.Lock()
+
+    @contextmanager
+    def _operation(self):
+        """Admit one operation, allowing nested work to finish during close."""
+        depth = getattr(self._operation_local, "depth", 0)
+        if depth:
+            self._operation_local.depth = depth + 1
+            try:
+                yield
+            finally:
+                self._operation_local.depth -= 1
+            return
+
+        with self._operation_condition:
+            if self._lifecycle_state != "open":
+                raise RuntimeError("Connection is closed and cannot accept new operations.")
+            self._active_operations += 1
+        self._operation_local.depth = 1
+        try:
+            yield
+        finally:
+            self._operation_local.depth = 0
+            with self._operation_condition:
+                self._active_operations -= 1
+                if not self._active_operations:
+                    self._operation_condition.notify_all()
+
+    def _token_lock(self, token_key):
+        """Return the lock for the configured token storage key."""
+        with self._token_locks_lock:
+            return self._token_locks.setdefault(token_key, threading.RLock())
 
     def set_logger(self, log_level, logger=None):
         """
@@ -114,8 +212,11 @@ class NewCentralBase:
 
     def _initialize_http_clients(self):
         """Create HTTP clients for every app in the routing table."""
-        for app_name in self._app_routes:
-            self._http_clients[app_name] = self._create_http_client(app_name)
+        with self._operation():
+            with self._http_clients_lock:
+                for app_name in self._app_routes:
+                    if app_name not in self._http_clients:
+                        self._http_clients[app_name] = self._create_http_client(app_name)
         if "unified" in self.token_info and "new_central" not in self._app_routes:
             self.logger.info(
                 "Unified mode: no 'base_url' or 'cluster_name' was provided for "
@@ -151,7 +252,9 @@ class NewCentralBase:
         """
         client_kwargs = {
             "http2": True,
-            "timeout": httpx.Timeout(30.0, connect=10.0),
+            "timeout": httpx.Timeout(
+                self._rest_timeout, connect=self._rest_connect_timeout
+            ),
             "verify": True,
         }
         # Apply tuned connection limits for Central requests
@@ -181,61 +284,67 @@ class NewCentralBase:
         Raises:
             LoginError: If there is an error during token creation.
         """
-        client_id, client_secret = self._return_client_credentials(app_name)
-        client = BackendApplicationClient(client_id)
+        with self._operation(), self._token_lock(app_name):
+            client_id, client_secret = self._return_client_credentials(app_name)
+            client = BackendApplicationClient(client_id)
 
-        oauth = OAuth2Session(client=client)
-        auth = HTTPBasicAuth(client_id, client_secret)
+            oauth = OAuth2Session(client=client)
+            auth = HTTPBasicAuth(client_id, client_secret)
 
-        token_url = self.token_info[app_name].get("_token_url")
-        if not token_url:
-            raise ValueError(
-                f"Cannot determine token URL for '{app_name}'. "
-                "Ensure valid credentials (including workspace_id for unified mode) are provided."
-            )
-
-        try:
-            self.logger.info(f"Attempting to create new token from {app_name}")
-            token = oauth.fetch_token(token_url=token_url, auth=auth)
-            if "access_token" not in token:
-                msg = (
-                    f"Token response for '{app_name}' did not contain an access_token. "
-                    "Verify that the client credentials and token URL are correct."
+            token_url = self.token_info[app_name].get("_token_url")
+            if not token_url:
+                raise ValueError(
+                    f"Cannot determine token URL for '{app_name}'. "
+                    "Ensure valid credentials (including workspace_id for unified mode) are provided."
                 )
+
+            try:
+                self.logger.info(f"Attempting to create new token from {app_name}")
+                token = oauth.fetch_token(
+                    token_url=token_url,
+                    auth=auth,
+                    timeout=(self._auth_connect_timeout, self._auth_timeout),
+                )
+                if "access_token" not in token:
+                    msg = (
+                        f"Token response for '{app_name}' did not contain an access_token. "
+                        "Verify that the client credentials and token URL are correct."
+                    )
+                    self.logger.error(msg)
+                    raise LoginError(msg)
+                self.logger.info(
+                    f"{app_name} Login Successful.. Obtained Access Token!"
+                )
+                self.token_info[app_name]["access_token"] = token["access_token"]
+                if self.token_file_path:
+                    save_access_token(
+                        app_name,
+                        token["access_token"],
+                        self.token_file_path,
+                        self.logger,
+                    )
+                return token["access_token"]
+            except Exception as e:
+                # unified extraction of status code (from exception or its response)
+                status_code = getattr(e, "status_code", None)
+                resp = getattr(e, "response", None)
+                if resp is not None:
+                    status_code = getattr(resp, "status_code", status_code)
+
+                # special-case invalid client credentials to provide a clearer, actionable message
+                if isinstance(e, InvalidClientError):
+                    description = getattr(e, "description", None) or str(e)
+                    msg = (
+                        f"{description} for {app_name}. "
+                        "Provide valid client_id and client_secret to create an access token."
+                    )
+                else:
+                    msg = str(e) or "Unexpected error while creating access token"
+
                 self.logger.error(msg)
-                raise LoginError(msg)
-            self.logger.info(
-                f"{app_name} Login Successful.. Obtained Access Token!"
-            )
-            self.token_info[app_name]["access_token"] = token["access_token"]
-            if self.token_file_path:
-                save_access_token(
-                    app_name,
-                    token["access_token"],
-                    self.token_file_path,
-                    self.logger,
-                )
-            return token["access_token"]
-        except Exception as e:
-            # unified extraction of status code (from exception or its response)
-            status_code = getattr(e, "status_code", None)
-            resp = getattr(e, "response", None)
-            if resp is not None:
-                status_code = getattr(resp, "status_code", status_code)
+                raise LoginError(msg, status_code)
 
-            # special-case invalid client credentials to provide a clearer, actionable message
-            if isinstance(e, InvalidClientError):
-                description = getattr(e, "description", None) or str(e)
-                msg = (
-                    f"{description} for {app_name}. "
-                    "Provide valid client_id and client_secret to create an access token."
-                )
-            else:
-                msg = str(e) or "Unexpected error while creating access token"
-
-            self.logger.error(msg)
-            raise LoginError(msg, status_code)
-
+    @_admitted_operation
     def command(
         self,
         api_method,
@@ -305,6 +414,7 @@ class NewCentralBase:
         limit_reached = False
         try:
             while not limit_reached:
+                access_token = self.get_access_token(app_name)
                 resp = self.request_url(
                     url=url,
                     data=req_data,
@@ -312,7 +422,7 @@ class NewCentralBase:
                     headers=req_headers,
                     params=api_params,
                     files=files,
-                    access_token=self.token_info[route["token_key"]]["access_token"],
+                    access_token=access_token,
                     app_name=app_name,
                 )
                 if resp.status_code == 401:
@@ -326,7 +436,9 @@ class NewCentralBase:
                     self.logger.info(
                         f"{app_name} access token has expired. Handling Token Expiry..."
                     )
-                    self._renew_token(route["token_key"])
+                    self._refresh_token(
+                        route["token_key"], access_token
+                    )
                     retry += 1
                 elif resp.status_code == 429:
                     # Allowing one retry on 429 in case rate limit hit
@@ -448,6 +560,7 @@ class NewCentralBase:
             return json.dumps(api_data)
         return api_data
 
+    @_admitted_operation
     def request_url(
         self,
         url,
@@ -512,10 +625,12 @@ class NewCentralBase:
             # Form-encoded dict
             kwargs["data"] = data
 
-        http_client = self._http_clients.get(app_name)
+        with self._http_clients_lock:
+            http_client = self._http_clients.get(app_name)
         if http_client is None:
-            http_client = self._create_http_client(app_name)
-            self._http_clients[app_name] = http_client
+            raise RuntimeError(
+                f"No HTTP client is available for '{app_name}'; the connection is closed."
+            )
 
         retry_count = 0
         while True:
@@ -553,6 +668,41 @@ class NewCentralBase:
         """
         self.create_token(token_key)
 
+    def _refresh_token(self, token_key, failed_token=None):
+        """Renew a token once per storage key, unless it already changed."""
+        with self._token_lock(token_key):
+            current_token = self.token_info[token_key].get("access_token")
+            if failed_token is not None and current_token != failed_token:
+                return current_token
+            self._renew_token(token_key)
+            return self.token_info[token_key].get("access_token")
+
+    def _route_for_app(self, app_name):
+        """Return the configured route for an application."""
+        try:
+            return self._app_routes[app_name]
+        except KeyError as err:
+            raise ValueError(
+                f"Missing configuration for '{app_name}'. Please provide access token "
+                "or client credentials to generate an access token for app - "
+                f"{app_name}"
+            ) from err
+
+    def get_base_url(self, app_name="new_central"):
+        """Return the configured base URL for an application without I/O."""
+        return self._route_for_app(app_name)["base_url"]
+
+    def get_access_token(self, app_name="new_central"):
+        """Return the current configured token for an application without I/O."""
+        token_key = self._route_for_app(app_name)["token_key"]
+        return self.token_info[token_key].get("access_token")
+
+    def refresh_access_token(self, app_name="new_central"):
+        """Explicitly renew and return an application's token."""
+        with self._operation():
+            token_key = self._route_for_app(app_name)["token_key"]
+            return self._refresh_token(token_key)
+
     def _validate_request(self, app_name, method):
         """
         Validate that the provided app name is configured and the HTTP method is supported.
@@ -565,13 +715,11 @@ class NewCentralBase:
             ValueError: If app_name is not in token_info or access_token is missing.
             ValueError: If the method is not supported.
         """
-        if app_name not in self._app_routes:
-            error_string = (
-                f"Missing configuration for '{app_name}'. Please provide access token "
-                f"or client credentials to generate an access token for app - {app_name}"
-            )
-            self.logger.error(error_string)
-            raise ValueError(error_string)
+        try:
+            self._route_for_app(app_name)
+        except ValueError as err:
+            self.logger.error(str(err))
+            raise
 
         if method not in SUPPORTED_API_METHODS:
             error_string = (
@@ -621,14 +769,31 @@ class NewCentralBase:
 
     def close(self):
         """Close all underlying HTTP clients and release connection pool resources."""
-        for app_name, http_client in self._http_clients.items():
+        with self._operation_condition:
+            if getattr(self._operation_local, "depth", 0):
+                raise RuntimeError("Cannot close a connection from an active operation.")
+            if self._lifecycle_state == "closed":
+                return
+            if self._lifecycle_state == "closing":
+                while self._lifecycle_state != "closed":
+                    self._operation_condition.wait()
+                return
+            self._lifecycle_state = "closing"
+            while self._active_operations:
+                self._operation_condition.wait()
+        with self._http_clients_lock:
+            http_clients = self._http_clients
+            self._http_clients = {}
+        for app_name, http_client in http_clients.items():
             try:
                 if http_client:
                     http_client.close()
             except Exception as err:
                 self.logger.error(f"Failed closing HTTP client for {app_name}: {err}")
 
-        self._http_clients = {}
+        with self._operation_condition:
+            self._lifecycle_state = "closed"
+            self._operation_condition.notify_all()
 
     def __enter__(self):
         return self

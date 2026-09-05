@@ -29,9 +29,15 @@ class TenantBase(NewCentralBase):
         self.token_info = token_info
         self.token_file_path = None
         self.logger = logger
+        self._set_timeouts(
+            msp_parent._rest_timeout,
+            msp_parent._rest_connect_timeout,
+            msp_parent._auth_timeout,
+            msp_parent._auth_connect_timeout,
+        )
+        self._initialize_connection_state()
         self._app_routes = self._build_app_routes()
         self.scopes = None
-        self._http_clients = {}
         self._initialize_http_clients()
 
     def _renew_token(self, token_key):

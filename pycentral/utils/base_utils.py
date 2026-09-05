@@ -6,6 +6,8 @@ import warnings
 import yaml
 import json
 import os
+import tempfile
+import threading
 from urllib.parse import urlencode, urlparse, urlunparse
 from .constants import AUTHENTICATION, CLUSTER_BASE_URLS, GLP_URLS
 from .common_utils import parse_input_file
@@ -38,6 +40,10 @@ APP_TOKEN_CREATION_REQUIRED_KEYS = {
     "glp": {"client_id", "client_secret"},
     "unified": {"client_id", "client_secret", "workspace_id"},
 }
+
+# Credential updates are intentionally coordinated only within this process.
+_TOKEN_FILE_LOCKS = {}
+_TOKEN_FILE_LOCKS_GUARD = threading.Lock()
 
 URL_BASE_ERR_MESSAGE = (
     "Please provide the base_url of API Gateway where Central account is provisioned!"
@@ -357,30 +363,60 @@ def save_access_token(app_name, access_token, token_file_path, logger):
         FileNotFoundError: If the credentials file doesn't exist.
         ValueError: If the app_name isn't found in the credentials file.
         IOError: If there is an error writing to the credentials file.
+
+    Credential updates are serialized within this process and committed with an
+    atomic replacement. Cross-process coordination is not provided.
     """
     if not os.path.isfile(token_file_path):
         raise FileNotFoundError(f"Credentials file not found: {token_file_path}")
 
-    # Load credentials file using existing helper function
-    file_data = parse_input_file(token_file_path)
-    _, ext = os.path.splitext(token_file_path)
-    is_json = ext.lower() == ".json"
+    # Resolve links before replacing: os.replace() on the user-supplied link
+    # would replace the link itself instead of preserving write-through behavior.
+    lock_path = os.path.realpath(os.path.abspath(token_file_path))
+    with _TOKEN_FILE_LOCKS_GUARD:
+        lock = _TOKEN_FILE_LOCKS.setdefault(lock_path, threading.Lock())
 
-    # Update the access token for the specified app
-    if app_name not in file_data:
-        raise ValueError(f"App '{app_name}' not found in credentials file")
+    # ponytail: one lock per credential path is sufficient for the in-process
+    # guarantee; cross-process coordination needs an explicit file-lock contract.
+    with lock:
+        # Read while holding the same lock as the eventual replacement. This
+        # prevents concurrent refreshes from clobbering each other's changes.
+        file_data = parse_input_file(token_file_path)
+        _, ext = os.path.splitext(token_file_path)
+        is_json = ext.lower() == ".json"
 
-    file_data[app_name]["access_token"] = access_token
+        if app_name not in file_data:
+            raise ValueError(f"App '{app_name}' not found in credentials file")
+        file_data[app_name]["access_token"] = access_token
 
-    # Write updated data back to file
-    try:
-        with open(token_file_path, "w") as f:
-            if is_json:
-                json.dump(file_data, f, indent=4, sort_keys=False)
-            else:
-                yaml.dump(file_data, f, sort_keys=False)
+        temporary_path = None
+        try:
+            file_mode = os.stat(lock_path).st_mode
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                dir=os.path.dirname(lock_path) or ".",
+                prefix=".pycentral-",
+                delete=False,
+            ) as temporary:
+                temporary_path = temporary.name
+                os.chmod(temporary_path, file_mode)
+                if is_json:
+                    json.dump(file_data, temporary, indent=4, sort_keys=False)
+                else:
+                    yaml.dump(file_data, temporary, sort_keys=False)
+                temporary.flush()
+                os.fsync(temporary.fileno())
+            os.replace(temporary_path, lock_path)
+            temporary_path = None
             logger.info(
                 f"Successfully saved {app_name}'s access token in {token_file_path}"
             )
-    except OSError as e:
-        raise OSError(f"Failed to write updated credentials to file: {e}") from e
+        except OSError as e:
+            raise OSError(f"Failed to write updated credentials to file: {e}") from e
+        finally:
+            if temporary_path:
+                try:
+                    os.unlink(temporary_path)
+                except OSError:
+                    pass

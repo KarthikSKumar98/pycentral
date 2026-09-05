@@ -1,61 +1,193 @@
-import ssl
-import threading
+import ipaddress
 import signal
-from urllib.parse import urlencode
+import threading
+import uuid
+from urllib.parse import urlencode, urlsplit
 
 import websocket
+from google.protobuf import message_factory
 from google.protobuf.json_format import MessageToDict
+from google.protobuf.message import DecodeError
 
-from .events.audit import audit_trail_pb2
+from .events.alert import alert_pb2
 from .events.ap import ap_events_pb2
+from .events.audit import audit_trail_pb2
+from .events.client import client_pb2
+from .events.event import event_pb2
+from .events.gateway import gw_pb2
+from .events.geofence import geofence_pb2
 from .events.location import location_pb2
 from .events.location_analytics import location_analytics_pb2
-from .events.geofence import geofence_pb2
-from .events.event import event_pb2
-from .events.alert import alert_pb2
-from .events.client import client_pb2
 from .events.switch import sw_pb2
-from google.protobuf import symbol_database as _symbol_database
-from google.protobuf.json_format import MessageToDict
-import threading
-import signal
 
-# Central-mandated ping settings (not user-configurable)
-_PING_INTERVAL = 10  # seconds between keep-alive pings
-_PING_TIMEOUT = 5  # seconds to wait for a pong response
+_PING_INTERVAL = 10
+_PING_TIMEOUT = 5
+_GATEWAY_FILTERS = frozenset((
+    "com.hpe.greenlake.network-monitoring.v1.gateways.state.device",
+    "com.hpe.greenlake.network-monitoring.v1.gateways.state.uplink",
+    "com.hpe.greenlake.network-monitoring.v1.gateways.state.vlan",
+    "com.hpe.greenlake.network-monitoring.v1.gateways.state.tunnel",
+    "com.hpe.greenlake.network-monitoring.v1.gateways.state.interface",
+    "com.hpe.greenlake.network-monitoring.v1.gateways.stats.device",
+    "com.hpe.greenlake.network-monitoring.v1.gateways.stats.uplink",
+    "com.hpe.greenlake.network-monitoring.v1.gateways.stats.uplink_wan",
+    "com.hpe.greenlake.network-monitoring.v1.gateways.stats.uplink_ip_probe",
+    "com.hpe.greenlake.network-monitoring.v1.gateways.stats.tunnel",
+    "com.hpe.greenlake.network-monitoring.v1.gateways.stats.interface",
+))
 
-
-# Top-level keys are service paths; second-level keys are API versions.
-# Event values are fixed decoder classes, or None for dynamic dispatch.
-SUPPORTED_EVENTS = {
-    "network-services": {
-        "v1alpha1": {
-            "audit-trail-events": audit_trail_pb2.AuditTrail,
-            "location": location_pb2.StreamLocationMessage,
-            "rssi-events": location_analytics_pb2.RssiEvent,
-            "geofence": geofence_pb2.StreamGeofenceMessage,
-        },
-    },
-    "network-monitoring": {
-        "v1alpha1": {
-            "ap-events": None,  # decoded dynamically via CloudEvent type_url
-        },
-        "v1": {
-            "clients-events": client_pb2.StreamClientMessage,
-            "switch-events": sw_pb2.StreamSwitchMessage,
-        },
-    },
-    "network-notifications": {
-        "v1": {
-            "alert-events": alert_pb2.AlertStreamingMessage,
-        },
-    },
+# event: (service, version, decoder, allowed filters)
+_EVENTS = {
+    "audit-trail-events": ("network-services", "v1alpha1", audit_trail_pb2.AuditTrail, None),
+    "location": ("network-services", "v1alpha1", location_pb2.StreamLocationMessage, None),
+    "rssi-events": ("network-services", "v1alpha1", location_analytics_pb2.RssiEvent, None),
+    "geofence": ("network-services", "v1alpha1", geofence_pb2.StreamGeofenceMessage, None),
+    "ap-events": ("network-monitoring", "v1alpha1", None, None),
+    "clients-events": ("network-monitoring", "v1", client_pb2.StreamClientMessage, None),
+    "switch-events": ("network-monitoring", "v1", sw_pb2.StreamSwitchMessage, None),
+    "gw-events": ("network-monitoring", "v1", gw_pb2.MonitoringInformation, _GATEWAY_FILTERS),
+    "alert-events": ("network-notifications", "v1", alert_pb2.AlertStreamingMessage, None),
+}
+_AP_MESSAGES = {
+    alias: message_factory.GetMessageClass(descriptor)
+    for descriptor in ap_events_pb2.DESCRIPTOR.message_types_by_name.values()
+    for alias in (descriptor.name, descriptor.full_name, "ap." + descriptor.name)
 }
 
 
-class Streaming:
+class StreamingDecodeError(ValueError):
+    """A streaming frame cannot be decoded for its selected event."""
+
+
+def get_supported_events():
+    """Return the supported Central streaming event names.
+
+    Returns:
+        tuple[str, ...]: Immutable, alphabetically ordered event names.
     """
-    Minimal WebSocket streaming client for Central.
+    return tuple(sorted(_EVENTS))
+
+
+def _resolve_event(event):
+    try:
+        return _EVENTS[event]
+    except KeyError as error:
+        raise ValueError(
+            f"Unsupported event: {event}. Supported events: {list(get_supported_events())}"
+        ) from error
+
+
+def _is_valid_hostname(hostname):
+    try:
+        ipaddress.ip_address(hostname)
+        return True
+    except ValueError:
+        labels = hostname.split(".")
+        return bool(labels) and all(
+            label and label[0].isalnum() and label[-1].isalnum()
+            and all(char.isalnum() or char == "-" for char in label)
+            for label in labels
+        )
+
+
+def _normalize_filters(filters, allowed_filters=None):
+    if filters is None:
+        return None
+    if isinstance(filters, str):
+        value = filters
+    elif isinstance(filters, list) and all(isinstance(item, str) for item in filters):
+        value = ",".join(filters)
+    else:
+        raise ValueError("Filters must be a string or a list of strings.")
+    if allowed_filters is not None and not all(
+        item in allowed_filters for item in value.split(",")
+    ):
+        raise ValueError("Unsupported filter for gw-events.")
+    return value
+
+
+def build_streaming_url(base_url, event, filters=None):
+    """Build a Central streaming URL without creating a connection.
+
+    Args:
+        base_url (str): An HTTPS/WSS origin or a bare hostname, optionally
+            with a port and a trailing slash.
+        event (str): A value returned by :func:`get_supported_events`.
+        filters (str|list[str]|None): Event-type filters. ``gw-events`` only
+            accepts the eleven Gateway filters documented by Central.
+
+    Returns:
+        str: The WSS endpoint with an encoded ``event-types`` query value.
+
+    Raises:
+        ValueError: If the event, origin, or filters are unsupported. Origins
+            with credentials, paths, queries, fragments, insecure schemes, or
+            invalid hostnames are rejected.
+    """
+    service, version, _, allowed_filters = _resolve_event(event)
+    if not isinstance(base_url, str) or not base_url:
+        raise ValueError("base_url must be an HTTPS/WSS origin or hostname.")
+    parsed = urlsplit(base_url if "://" in base_url else "//" + base_url)
+    if (
+        parsed.scheme.lower() not in ("", "https", "wss")
+        or not parsed.hostname or parsed.username is not None
+        or parsed.password is not None or not _is_valid_hostname(parsed.hostname)
+        or parsed.path not in ("", "/") or parsed.query or parsed.fragment
+        or "\\" in base_url or any(char.isspace() or ord(char) < 32 for char in base_url)
+    ):
+        raise ValueError("base_url must be an HTTPS/WSS origin or hostname.")
+    try:
+        parsed.port
+    except ValueError as error:
+        raise ValueError("base_url has an invalid port.") from error
+    filters = _normalize_filters(filters, allowed_filters)
+    url = f"wss://{parsed.netloc}/{service}/{version}/{event}"
+    return f"{url}?{urlencode({'event-types': filters})}" if filters else url
+
+
+def decode_frame(event, frame):
+    """Decode a protobuf CloudEvent frame into ``(envelope, payload)``.
+
+    Args:
+        event (str): A value returned by :func:`get_supported_events`.
+        frame (bytes): Serialized CloudEvent protobuf bytes whose data is a
+            protobuf ``Any`` payload for ``event``.
+
+    Returns:
+        tuple: The CloudEvent envelope and decoded event payload protobuf.
+
+    Raises:
+        StreamingDecodeError: If the event is unsupported, the envelope lacks
+            protobuf data, the AP type is unknown, or either protobuf is malformed.
+    """
+    try:
+        _, _, decoder, _ = _resolve_event(event)
+    except ValueError as error:
+        raise StreamingDecodeError(str(error)) from error
+    if not isinstance(frame, (bytes, bytearray)):
+        raise StreamingDecodeError("Streaming frames must be bytes.")
+    envelope = event_pb2.CloudEvent()
+    try:
+        envelope.ParseFromString(frame)
+    except DecodeError as error:
+        raise StreamingDecodeError("Malformed CloudEvent frame.") from error
+    if envelope.WhichOneof("data") != "proto_data":
+        raise StreamingDecodeError("CloudEvent must contain protobuf data.")
+    if decoder is None:
+        type_name = envelope.proto_data.type_url.rsplit("/", 1)[-1]
+        decoder = _AP_MESSAGES.get(type_name)
+        if decoder is None:
+            raise StreamingDecodeError(f"Unknown ap-events message type: {type_name}.")
+    payload = decoder()
+    try:
+        payload.ParseFromString(envelope.proto_data.value)
+    except DecodeError as error:
+        raise StreamingDecodeError("Malformed protobuf payload.") from error
+    return envelope, payload
+
+
+class Streaming:
+    """Minimal WebSocket streaming client for Central.
 
     Responsibilities:
         - Build the WSS URL for the selected streaming endpoint.
@@ -71,143 +203,74 @@ class Streaming:
         - ``ap-events`` for access point updates
         - ``clients-events`` for client updates
         - ``switch-events`` for switch updates
+        - ``gw-events`` for gateway updates
         - ``alert-events`` for alert updates
 
     Args:
-        central_conn (NewCentralBase): Central connection object, used for
-            tokens, base URL and logging.
-        event (str): Unique streaming event name registered in the nested
-            SUPPORTED_EVENTS map (for example, "audit-trail-events").
-        reconnect_delay (int, optional): Delay in seconds before attempting
-            to reconnect after an unexpected disconnection. Defaults to 5.
-        max_retries (int|None, optional): Maximum number of reconnection
-            attempts after an unexpected disconnection. ``None`` (default)
-            means retry indefinitely.
-        filters (str|list[str], optional): Either a single filter string or a list of filter strings.
-            If a list is provided, its elements will be joined with commas to form the header value.
+        central_conn (NewCentralBase): Central connection object used for
+            tokens, base URL, and logging.
+        event (str): A supported event name.
+        reconnect_delay (int, optional): Delay before reconnecting. Defaults to 5.
+        max_retries (int|None, optional): Reconnect limit, or ``None`` forever.
+        filters (str|list[str]|None): Event-type filters. Gateway filters are
+            validated against Central's published values.
+        subscriber_id (str|None): Optional UUIDv4 sent as ``Subscriber-Id``.
 
     Raises:
-        ValueError: If an unsupported event is provided or filters are of an unexpected type.
+        ValueError: If the event, filters, or subscriber ID are invalid.
     """
 
-    def __init__(
-        self,
-        central_conn,
-        event,
-        reconnect_delay=5,
-        max_retries=None,
-        filters=None,
-    ):
+    def __init__(self, central_conn, event, reconnect_delay=5, max_retries=None,
+                 filters=None, subscriber_id=None):
         self.central_conn = central_conn
-        # cache the commonly used app route and token key to simplify lookups
-        self.app_route = self.central_conn._app_routes["new_central"]
+        self.app_route = central_conn._app_routes["new_central"]
         self.token_key = self.app_route["token_key"]
-        routes = {}
-        duplicates = set()
-        for service, versions in SUPPORTED_EVENTS.items():
-            for version, events in versions.items():
-                for event_name, decoder in events.items():
-                    if event_name in routes:
-                        duplicates.add(event_name)
-                    else:
-                        routes[event_name] = (service, version, decoder)
-
-        if duplicates:
-            raise ValueError(
-                f"Duplicate streaming event names: {sorted(duplicates)}"
-            )
-        if event not in routes:
-            raise ValueError(
-                f"Unsupported event: {event}. Supported events: {sorted(routes)}"
-            )
-
         self.endpoint = event
-        self.service, self.version, self.decoder = routes[event]
+        self.service, self.version, self.decoder, allowed_filters = _resolve_event(event)
+        self.filters = _normalize_filters(filters, allowed_filters)
+        self.subscriber_id = self._validate_subscriber_id(subscriber_id)
         self.reconnect_delay = reconnect_delay
         self.max_retries = max_retries
         self.logger = central_conn.logger
         self.ws = None
         self.user_callback = None
-
-        self.stop_event = threading.Event()  # Thread-safe stop flag
+        self.stop_event = threading.Event()
         self._original_sigint = None
 
-        self.filters = self._normalize_filters(filters)
-
     @staticmethod
-    def _normalize_filters(filters):
-        """Validate and normalise the filters argument to a comma-separated
-        string, or None when no filters are requested.
-
-        Args:
-            filters (str|list[str]|None): Raw filter value supplied by
-                the caller.
-
-        Returns:
-            str|None: Normalised filter string or None.
-
-        Raises:
-            ValueError: For unsupported types or non-string list elements.
-        """
-        if filters is None:
+    def _validate_subscriber_id(subscriber_id):
+        if subscriber_id is None:
             return None
-        if isinstance(filters, str):
-            return filters
-        if isinstance(filters, list):
-            if not all(isinstance(f, str) for f in filters):
-                raise ValueError("All filter values must be strings.")
-            return ",".join(filters)
-        raise ValueError("Filters must be a string or a list of strings.")
+        if not isinstance(subscriber_id, str):
+            raise ValueError("subscriber_id must be a UUIDv4 string.")
+        try:
+            value = uuid.UUID(subscriber_id)
+        except ValueError as error:
+            raise ValueError("subscriber_id must be a UUIDv4 string.") from error
+        if value.version != 4 or value.variant != uuid.RFC_4122:
+            raise ValueError("subscriber_id must be a UUIDv4 string.")
+        return str(value)
 
     def _build_headers(self):
-        """Assemble the HTTP headers required for the WebSocket handshake.
-
-        Returns:
-            list[str]: Header strings ready for websocket.WebSocketApp.
-        """
+        """Assemble the HTTP headers required for the WebSocket handshake."""
         token = self.central_conn.token_info[self.token_key]["access_token"]
-        return [f"Authorization: Bearer {token}"]
+        headers = [f"Authorization: Bearer {token}"]
+        if self.subscriber_id:
+            headers.append(f"Subscriber-Id: {self.subscriber_id}")
+        return headers
 
     def _on_message(self, ws, message):
-        """Handle incoming WebSocket messages.
+        """Decode a frame and deliver its protobuf-field-name dictionary.
 
-        The raw message is first parsed as a CloudEvent protobuf and then
-        decoded using the event-specific protobuf decoder. The decoded
-        message is converted to a dict and passed to the user callback
-        if provided, otherwise logged.
-
-        Args:
-            ws (websocket.WebSocketApp): WebSocket instance (unused).
-            message (bytes): Raw protobuf-encoded message payload.
+        Invalid frames are logged and skipped so the long-running adapter keeps
+        its existing unknown-AP-type behavior.
         """
-        event_data = event_pb2.CloudEvent()
-        event_data.ParseFromString(message)
-
-        if self.decoder is not None:
-            decoded_message = self.decoder()
-        else:
-            # Dynamic dispatch: resolve the message class from the Any type_url.
-            # The server may use a short package path (e.g. "ap.APSystemStat")
-            # that doesn't match the fully-qualified name in the symbol database
-            # (e.g. "network_monitoring.ap.v1alpha1.APSystemStat"), so fall back
-            # to a direct attribute lookup on the ap_events_pb2 module.
-            type_name = event_data.proto_data.type_url.rsplit("/", 1)[-1]
-            short_name = type_name.rsplit(".", 1)[-1]
-            try:
-                msg_class = _symbol_database.Default().GetSymbol(type_name)
-            except KeyError:
-                msg_class = getattr(ap_events_pb2, short_name, None)
-            if msg_class is None:
-                self.logger.error(
-                    f"Unknown ap-events message type: {type_name}. Skipping."
-                )
-                return
-            decoded_message = msg_class()
-
-        decoded_message.ParseFromString(event_data.proto_data.value)
-        json_message = MessageToDict(
-            decoded_message, preserving_proto_field_name=True
-        )
+        try:
+            _, decoded_message = decode_frame(self.endpoint, message)
+        except StreamingDecodeError as error:
+            self.logger.error("Unable to decode %s frame: %s Skipping.", self.endpoint, error)
+            return
+        json_message = MessageToDict(decoded_message, preserving_proto_field_name=True)
         if self.user_callback:
             try:
                 self.user_callback(json_message)
@@ -275,26 +338,8 @@ class Streaming:
             self.logger.info(f"Applied filters: {self.filters}")
 
     def _get_wss_url(self):
-        """Build the WebSocket Secure (WSS) URL for the configured event.
-
-        The URL is constructed using the Central base URL from the
-        connection object and service/version metadata from the selected
-        registry route. If filters are configured, they are appended as
-        the ``event-types`` query parameter.
-
-        Returns:
-            str: Fully qualified WSS URL for the streaming endpoint.
-        """
-        base_url = self.app_route["base_url"].rstrip("/")
-        # Strip any scheme so we can always prefix with wss://
-        host = base_url.replace("https://", "", 1).replace("http://", "", 1)
-        url = (
-            f"wss://{host}/{self.service}/{self.version}/{self.endpoint}"
-        )
-        if self.filters:
-            query_filter = urlencode({"event-types": self.filters})
-            url = f"{url}?{query_filter}"
-        return url
+        """Build the WSS URL for the configured event without I/O."""
+        return build_streaming_url(self.app_route["base_url"], self.endpoint, self.filters)
 
     def stream(self, callback=None):
         """Start streaming messages for the configured event.
@@ -334,7 +379,6 @@ class Streaming:
 
                     self.logger.info(f"Connecting to {url.split('?')[0]}...")
                     self.ws.run_forever(
-                        sslopt={"cert_reqs": ssl.CERT_NONE},
                         ping_interval=_PING_INTERVAL,
                         ping_timeout=_PING_TIMEOUT,
                     )
