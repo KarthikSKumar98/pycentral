@@ -72,10 +72,8 @@ class MSPBase(NewCentralBase):
         logger=None,
         log_level="INFO",
         enable_scope=False,
-        rest_timeout=30.0,
-        rest_connect_timeout=10.0,
-        auth_timeout=30.0,
-        auth_connect_timeout=10.0,
+        timeout=30.0,
+        connect_timeout=10.0,
     ):
         # Tenant connection cache: {tenant_workspace_id: TenantBase}
         # Initialised before super().__init__ so it exists if any subclass hook
@@ -86,10 +84,8 @@ class MSPBase(NewCentralBase):
             logger=logger,
             log_level=log_level,
             enable_scope=enable_scope,
-            rest_timeout=rest_timeout,
-            rest_connect_timeout=rest_connect_timeout,
-            auth_timeout=auth_timeout,
-            auth_connect_timeout=auth_connect_timeout,
+            timeout=timeout,
+            connect_timeout=connect_timeout,
         )
 
     def _get_msp_access_token(self):
@@ -139,7 +135,7 @@ class MSPBase(NewCentralBase):
             token_url=token_url,
             auth=auth,
             subject_token_type="urn:ietf:params:oauth:token-type:access_token",
-            timeout=(self._auth_connect_timeout, self._auth_timeout),
+            timeout=(self._connect_timeout, self._timeout),
         )
 
         for attempt in range(2):

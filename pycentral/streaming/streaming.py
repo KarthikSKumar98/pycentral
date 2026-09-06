@@ -1,4 +1,4 @@
-import ipaddress
+import math
 import signal
 import threading
 import uuid
@@ -22,31 +22,17 @@ from .events.switch import sw_pb2
 
 _PING_INTERVAL = 10
 _PING_TIMEOUT = 5
-_GATEWAY_FILTERS = frozenset((
-    "com.hpe.greenlake.network-monitoring.v1.gateways.state.device",
-    "com.hpe.greenlake.network-monitoring.v1.gateways.state.uplink",
-    "com.hpe.greenlake.network-monitoring.v1.gateways.state.vlan",
-    "com.hpe.greenlake.network-monitoring.v1.gateways.state.tunnel",
-    "com.hpe.greenlake.network-monitoring.v1.gateways.state.interface",
-    "com.hpe.greenlake.network-monitoring.v1.gateways.stats.device",
-    "com.hpe.greenlake.network-monitoring.v1.gateways.stats.uplink",
-    "com.hpe.greenlake.network-monitoring.v1.gateways.stats.uplink_wan",
-    "com.hpe.greenlake.network-monitoring.v1.gateways.stats.uplink_ip_probe",
-    "com.hpe.greenlake.network-monitoring.v1.gateways.stats.tunnel",
-    "com.hpe.greenlake.network-monitoring.v1.gateways.stats.interface",
-))
-
-# event: (service, version, decoder, allowed filters)
+# event: (service, version, decoder)
 _EVENTS = {
-    "audit-trail-events": ("network-services", "v1alpha1", audit_trail_pb2.AuditTrail, None),
-    "location": ("network-services", "v1alpha1", location_pb2.StreamLocationMessage, None),
-    "rssi-events": ("network-services", "v1alpha1", location_analytics_pb2.RssiEvent, None),
-    "geofence": ("network-services", "v1alpha1", geofence_pb2.StreamGeofenceMessage, None),
-    "ap-events": ("network-monitoring", "v1alpha1", None, None),
-    "clients-events": ("network-monitoring", "v1", client_pb2.StreamClientMessage, None),
-    "switch-events": ("network-monitoring", "v1", sw_pb2.StreamSwitchMessage, None),
-    "gw-events": ("network-monitoring", "v1", gw_pb2.MonitoringInformation, _GATEWAY_FILTERS),
-    "alert-events": ("network-notifications", "v1", alert_pb2.AlertStreamingMessage, None),
+    "audit-trail-events": ("network-services", "v1alpha1", audit_trail_pb2.AuditTrail),
+    "location": ("network-services", "v1alpha1", location_pb2.StreamLocationMessage),
+    "rssi-events": ("network-services", "v1alpha1", location_analytics_pb2.RssiEvent),
+    "geofence": ("network-services", "v1alpha1", geofence_pb2.StreamGeofenceMessage),
+    "ap-events": ("network-monitoring", "v1alpha1", None),
+    "clients-events": ("network-monitoring", "v1", client_pb2.StreamClientMessage),
+    "switch-events": ("network-monitoring", "v1", sw_pb2.StreamSwitchMessage),
+    "gw-events": ("network-monitoring", "v1", gw_pb2.MonitoringInformation),
+    "alert-events": ("network-notifications", "v1", alert_pb2.AlertStreamingMessage),
 }
 _AP_MESSAGES = {
     alias: message_factory.GetMessageClass(descriptor)
@@ -59,7 +45,7 @@ class StreamingDecodeError(ValueError):
     """A streaming frame cannot be decoded for its selected event."""
 
 
-def get_supported_events():
+def get_supported_events() -> tuple[str, ...]:
     """Return the supported Central streaming event names.
 
     Returns:
@@ -77,20 +63,7 @@ def _resolve_event(event):
         ) from error
 
 
-def _is_valid_hostname(hostname):
-    try:
-        ipaddress.ip_address(hostname)
-        return True
-    except ValueError:
-        labels = hostname.split(".")
-        return bool(labels) and all(
-            label and label[0].isalnum() and label[-1].isalnum()
-            and all(char.isalnum() or char == "-" for char in label)
-            for label in labels
-        )
-
-
-def _normalize_filters(filters, allowed_filters=None):
+def _normalize_filters(filters):
     if filters is None:
         return None
     if isinstance(filters, str):
@@ -99,22 +72,17 @@ def _normalize_filters(filters, allowed_filters=None):
         value = ",".join(filters)
     else:
         raise ValueError("Filters must be a string or a list of strings.")
-    if allowed_filters is not None and not all(
-        item in allowed_filters for item in value.split(",")
-    ):
-        raise ValueError("Unsupported filter for gw-events.")
     return value
 
 
-def build_streaming_url(base_url, event, filters=None):
+def build_streaming_url(base_url, event, filters=None) -> str:
     """Build a Central streaming URL without creating a connection.
 
     Args:
         base_url (str): An HTTPS/WSS origin or a bare hostname, optionally
             with a port and a trailing slash.
         event (str): A value returned by :func:`get_supported_events`.
-        filters (str|list[str]|None): Event-type filters. ``gw-events`` only
-            accepts the eleven Gateway filters documented by Central.
+        filters (str|list[str]|None): Event-type filters.
 
     Returns:
         str: The WSS endpoint with an encoded ``event-types`` query value.
@@ -122,30 +90,29 @@ def build_streaming_url(base_url, event, filters=None):
     Raises:
         ValueError: If the event, origin, or filters are unsupported. Origins
             with credentials, paths, queries, fragments, insecure schemes, or
-            invalid hostnames are rejected.
+            missing hostnames are rejected.
     """
-    service, version, _, allowed_filters = _resolve_event(event)
+    service, version, _ = _resolve_event(event)
     if not isinstance(base_url, str) or not base_url:
         raise ValueError("base_url must be an HTTPS/WSS origin or hostname.")
     parsed = urlsplit(base_url if "://" in base_url else "//" + base_url)
     if (
         parsed.scheme.lower() not in ("", "https", "wss")
         or not parsed.hostname or parsed.username is not None
-        or parsed.password is not None or not _is_valid_hostname(parsed.hostname)
+        or parsed.password is not None
         or parsed.path not in ("", "/") or parsed.query or parsed.fragment
-        or "\\" in base_url or any(char.isspace() or ord(char) < 32 for char in base_url)
     ):
         raise ValueError("base_url must be an HTTPS/WSS origin or hostname.")
     try:
         parsed.port
     except ValueError as error:
         raise ValueError("base_url has an invalid port.") from error
-    filters = _normalize_filters(filters, allowed_filters)
+    filters = _normalize_filters(filters)
     url = f"wss://{parsed.netloc}/{service}/{version}/{event}"
     return f"{url}?{urlencode({'event-types': filters})}" if filters else url
 
 
-def decode_frame(event, frame):
+def decode_frame(event, frame) -> tuple:
     """Decode a protobuf CloudEvent frame into ``(envelope, payload)``.
 
     Args:
@@ -161,7 +128,7 @@ def decode_frame(event, frame):
             protobuf data, the AP type is unknown, or either protobuf is malformed.
     """
     try:
-        _, _, decoder, _ = _resolve_event(event)
+        _, _, decoder = _resolve_event(event)
     except ValueError as error:
         raise StreamingDecodeError(str(error)) from error
     if not isinstance(frame, (bytes, bytearray)):
@@ -210,10 +177,11 @@ class Streaming:
         central_conn (NewCentralBase): Central connection object used for
             tokens, base URL, and logging.
         event (str): A supported event name.
-        reconnect_delay (int, optional): Delay before reconnecting. Defaults to 5.
-        max_retries (int|None, optional): Reconnect limit, or ``None`` forever.
-        filters (str|list[str]|None): Event-type filters. Gateway filters are
-            validated against Central's published values.
+        reconnect_delay (int|float, optional): Finite non-negative delay before
+            reconnecting. Defaults to 5.
+        max_retries (int|None, optional): Number of reconnects after the
+            initial attempt in each ``stream()`` call, or ``None`` forever.
+        filters (str|list[str]|None): Event-type filters.
         subscriber_id (str|None): Optional UUIDv4 sent as ``Subscriber-Id``.
 
     Raises:
@@ -223,12 +191,17 @@ class Streaming:
     def __init__(self, central_conn, event, reconnect_delay=5, max_retries=None,
                  filters=None, subscriber_id=None):
         self.central_conn = central_conn
-        self.app_route = central_conn._app_routes["new_central"]
-        self.token_key = self.app_route["token_key"]
+        self.base_url = central_conn.get_base_url(app_name="new_central")
         self.endpoint = event
-        self.service, self.version, self.decoder, allowed_filters = _resolve_event(event)
-        self.filters = _normalize_filters(filters, allowed_filters)
+        _resolve_event(event)
+        self.filters = _normalize_filters(filters)
         self.subscriber_id = self._validate_subscriber_id(subscriber_id)
+        if not (isinstance(reconnect_delay, (int, float))
+                and 0 <= reconnect_delay < math.inf):
+            raise ValueError("reconnect_delay must be a finite non-negative number.")
+        if not (max_retries is None
+                or (isinstance(max_retries, int) and max_retries >= 0)):
+            raise ValueError("max_retries must be a non-negative integer or None.")
         self.reconnect_delay = reconnect_delay
         self.max_retries = max_retries
         self.logger = central_conn.logger
@@ -236,6 +209,7 @@ class Streaming:
         self.user_callback = None
         self.stop_event = threading.Event()
         self._original_sigint = None
+        self._handshake_token = None
 
     @staticmethod
     def _validate_subscriber_id(subscriber_id):
@@ -247,13 +221,14 @@ class Streaming:
             value = uuid.UUID(subscriber_id)
         except ValueError as error:
             raise ValueError("subscriber_id must be a UUIDv4 string.") from error
-        if value.version != 4 or value.variant != uuid.RFC_4122:
+        if value.version != 4:
             raise ValueError("subscriber_id must be a UUIDv4 string.")
         return str(value)
 
     def _build_headers(self):
         """Assemble the HTTP headers required for the WebSocket handshake."""
-        token = self.central_conn.token_info[self.token_key]["access_token"]
+        token = self.central_conn.get_access_token(app_name="new_central")
+        self._handshake_token = token
         headers = [f"Authorization: Bearer {token}"]
         if self.subscriber_id:
             headers.append(f"Subscriber-Id: {self.subscriber_id}")
@@ -279,39 +254,56 @@ class Streaming:
         else:
             self.logger.info(f"{json_message}")
 
-    def _on_error(self, ws, error):
+    def _handle_error(self, error):
         """Handle WebSocket errors.
 
-        * HTTP 401: attempts a token refresh via the Central connection;
+        * HTTP 401: attempts a coordinated refresh via the Central connection;
           stops streaming if the refresh fails.
-        * Other HTTP errors (403, 404, …): unrecoverable — stops streaming
-          immediately so the reconnect loop does not retry indefinitely.
-        * All other errors (network resets, timeouts, …): logged and left
-          for the reconnect loop to handle transparently.
+        * HTTP 429, 500, 502, 503, and 504 are retryable.
+        * Other HTTP errors stop streaming; non-HTTP errors use the reconnect
+          loop's same finite budget.
 
-        Args:
-            ws (websocket.WebSocketApp): WebSocket instance (unused).
-            error (Exception|str): Error raised by the WebSocket client.
         """
         self.logger.error(f"WebSocket error: {error}")
         if isinstance(error, websocket.WebSocketBadStatusException):
             if error.status_code == 401:
                 try:
-                    self.central_conn._renew_token(self.token_key)
+                    self.central_conn.refresh_access_token(
+                        app_name="new_central", failed_token=self._handshake_token
+                    )
                     self.logger.info("Token refreshed. Will reconnect.")
                 except Exception as refresh_error:
                     self.logger.error(f"Token refresh failed: {refresh_error}")
                     self.stop_event.set()
-            else:
+            elif error.status_code not in (429, 500, 502, 503, 504):
                 # Non-401 HTTP rejection (e.g. 403 Forbidden, 404 Not Found).
                 # Retrying will not fix the problem; stop immediately.
                 self.logger.error(
                     f"Unrecoverable HTTP error {error.status_code}. "
-                    f"Response body: {error.resp_body}. Stopping."
+                    f"Response body: {getattr(error, 'resp_body', None)}. Stopping."
                 )
                 self.stop_event.set()
-        # For all other error types (OSError, network reset, etc.) the
-        # reconnect loop in stream() will handle retrying automatically.
+
+    def _on_error(self, ws, error):
+        """Forward WebSocket callback errors to the reconnect classifier."""
+        self._handle_error(error)
+
+    def _wait_to_reconnect(self, reconnects):
+        """Consume one reconnect budget unit and wait without blocking stop()."""
+        if self.max_retries is not None and reconnects >= self.max_retries:
+            self.logger.error(f"Max retries ({self.max_retries}) reached. Stopping.")
+            self.stop_event.set()
+            return None
+        reconnects += 1
+        self.logger.info(
+            f"Connection closed. Reconnecting in {self.reconnect_delay}s… "
+            f"(attempt {reconnects}"
+            + (f"/{self.max_retries}" if self.max_retries is not None else "")
+            + ")"
+        )
+        if self.stop_event.wait(timeout=self.reconnect_delay):
+            return None
+        return reconnects
 
     def _on_close(self, ws, close_status_code, close_msg):
         """Handle WebSocket close events.
@@ -339,7 +331,7 @@ class Streaming:
 
     def _get_wss_url(self):
         """Build the WSS URL for the configured event without I/O."""
-        return build_streaming_url(self.app_route["base_url"], self.endpoint, self.filters)
+        return build_streaming_url(self.base_url, self.endpoint, self.filters)
 
     def stream(self, callback=None):
         """Start streaming messages for the configured event.
@@ -363,7 +355,7 @@ class Streaming:
 
         self._setup_signal_handler()
 
-        retry_count = 0
+        reconnects = 0
         try:
             while not self.stop_event.is_set():
                 try:
@@ -381,53 +373,18 @@ class Streaming:
                     self.ws.run_forever(
                         ping_interval=_PING_INTERVAL,
                         ping_timeout=_PING_TIMEOUT,
+                        reconnect=0,
                     )
-
-                    if self.stop_event.is_set():
-                        break
-
-                    retry_count += 1
-                    if (
-                        self.max_retries is not None
-                        and retry_count >= self.max_retries
-                    ):
-                        self.logger.error(
-                            f"Max retries ({self.max_retries}) reached. Stopping."
-                        )
-                        self.stop_event.set()
-                        break
-
-                    self.logger.info(
-                        f"Connection closed. Reconnecting in {self.reconnect_delay}s… "
-                        f"(attempt {retry_count}"
-                        + (
-                            f"/{self.max_retries}"
-                            if self.max_retries is not None
-                            else ""
-                        )
-                        + ")"
-                    )
-                    if self.stop_event.wait(timeout=self.reconnect_delay):
-                        break
 
                 except Exception as e:
-                    self.logger.error(
-                        f"Unexpected error in streaming loop: {e}"
-                    )
+                    self._handle_error(e)
                     if self.ws:
                         self.ws.close()
-                    retry_count += 1
-                    if (
-                        self.max_retries is not None
-                        and retry_count >= self.max_retries
-                    ):
-                        self.logger.error(
-                            f"Max retries ({self.max_retries}) reached. Stopping."
-                        )
-                        self.stop_event.set()
-                        break
-                    if self.stop_event.wait(timeout=self.reconnect_delay):
-                        break
+                if self.stop_event.is_set():
+                    break
+                reconnects = self._wait_to_reconnect(reconnects)
+                if reconnects is None:
+                    break
         finally:
             self._restore_signal_handler()
             self._cleanup()

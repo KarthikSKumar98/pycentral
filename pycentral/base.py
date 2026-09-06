@@ -9,8 +9,6 @@ import json
 import time
 import threading
 import math
-from contextlib import contextmanager
-from functools import wraps
 from .utils.base_utils import (
     build_url,
     new_parse_input_args,
@@ -35,15 +33,6 @@ TRANSIENT_TRANSPORT_ERRORS = (
 )
 
 
-def _admitted_operation(method):
-    """Wrap an I/O entry point in the connection lifecycle admission guard."""
-    @wraps(method)
-    def wrapper(self, *args, **kwargs):
-        with self._operation():
-            return method(self, *args, **kwargs)
-    return wrapper
-
-
 class NewCentralBase:
     def __init__(
         self,
@@ -51,10 +40,8 @@ class NewCentralBase:
         logger=None,
         log_level="INFO",
         enable_scope=False,
-        rest_timeout=30.0,
-        rest_connect_timeout=10.0,
-        auth_timeout=30.0,
-        auth_connect_timeout=10.0,
+        timeout=30.0,
+        connect_timeout=10.0,
     ):
         """
         Constructor initializes the NewCentralBase class with token information and logging configuration.
@@ -72,22 +59,17 @@ class NewCentralBase:
                 will automatically fetch data about existing scopes and associated profiles,
                 simplifying scope and configuration management. If False, scope-related API
                 calls are disabled, resulting in faster initialization. Defaults to False.
-            rest_timeout (float, optional): Per-I/O REST timeout in seconds. Defaults to 30.
-            rest_connect_timeout (float, optional): REST connect timeout in seconds.
+            timeout (float, optional): Per-I/O read/write timeout in seconds for every
+                request the connection makes, including token requests. Defaults to 30.
+            connect_timeout (float, optional): Per-I/O connect timeout in seconds.
                 Defaults to 10.
-            auth_timeout (float, optional): Per-I/O token request timeout in seconds.
-                Defaults to 30.
-            auth_connect_timeout (float, optional): Token request connect timeout in
-                seconds. Defaults to 10.
         """
         self.token_info = new_parse_input_args(token_info)
         self.token_file_path = None
         if isinstance(token_info, str):
             self.token_file_path = token_info
         self.logger = self.set_logger(log_level, logger)
-        self._set_timeouts(
-            rest_timeout, rest_connect_timeout, auth_timeout, auth_connect_timeout
-        )
+        self._set_timeouts(timeout, connect_timeout)
         self._initialize_connection_state()
         self._app_routes = self._build_app_routes()
         self.scopes = None
@@ -96,70 +78,22 @@ class NewCentralBase:
         if enable_scope:
             self.scopes = Scopes(central_conn=self)
 
-    def _set_timeouts(
-        self, rest_timeout, rest_connect_timeout, auth_timeout, auth_connect_timeout
-    ):
-        """Validate and store per-I/O REST and authentication timeouts."""
+    def _set_timeouts(self, timeout, connect_timeout):
+        """Validate and store per-I/O request timeouts."""
         values = {
-            "rest_timeout": rest_timeout,
-            "rest_connect_timeout": rest_connect_timeout,
-            "auth_timeout": auth_timeout,
-            "auth_connect_timeout": auth_connect_timeout,
+            "timeout": timeout,
+            "connect_timeout": connect_timeout,
         }
         for name, value in values.items():
-            if (
-                not isinstance(value, (int, float))
-                or isinstance(value, bool)
-                or not math.isfinite(value)
-                or value <= 0
-            ):
+            if not (isinstance(value, (int, float)) and 0 < value < math.inf):
                 raise ValueError(f"{name} must be a positive number.")
-        self._rest_timeout = rest_timeout
-        self._rest_connect_timeout = rest_connect_timeout
-        self._auth_timeout = auth_timeout
-        self._auth_connect_timeout = auth_connect_timeout
+        self._timeout = timeout
+        self._connect_timeout = connect_timeout
 
     def _initialize_connection_state(self):
-        """Initialize synchronization shared by requests, refreshes, and close."""
-        self._operation_condition = threading.Condition()
-        self._operation_local = threading.local()
-        self._active_operations = 0
-        self._lifecycle_state = "open"
+        """Initialize the HTTP client table and the token renewal lock."""
         self._http_clients = {}
-        self._http_clients_lock = threading.Lock()
-        self._token_locks = {}
-        self._token_locks_lock = threading.Lock()
-
-    @contextmanager
-    def _operation(self):
-        """Admit one operation, allowing nested work to finish during close."""
-        depth = getattr(self._operation_local, "depth", 0)
-        if depth:
-            self._operation_local.depth = depth + 1
-            try:
-                yield
-            finally:
-                self._operation_local.depth -= 1
-            return
-
-        with self._operation_condition:
-            if self._lifecycle_state != "open":
-                raise RuntimeError("Connection is closed and cannot accept new operations.")
-            self._active_operations += 1
-        self._operation_local.depth = 1
-        try:
-            yield
-        finally:
-            self._operation_local.depth = 0
-            with self._operation_condition:
-                self._active_operations -= 1
-                if not self._active_operations:
-                    self._operation_condition.notify_all()
-
-    def _token_lock(self, token_key):
-        """Return the lock for the configured token storage key."""
-        with self._token_locks_lock:
-            return self._token_locks.setdefault(token_key, threading.RLock())
+        self._token_lock = threading.RLock()
 
     def set_logger(self, log_level, logger=None):
         """
@@ -212,11 +146,8 @@ class NewCentralBase:
 
     def _initialize_http_clients(self):
         """Create HTTP clients for every app in the routing table."""
-        with self._operation():
-            with self._http_clients_lock:
-                for app_name in self._app_routes:
-                    if app_name not in self._http_clients:
-                        self._http_clients[app_name] = self._create_http_client(app_name)
+        for app_name in self._app_routes:
+            self._http_clients[app_name] = self._create_http_client(app_name)
         if "unified" in self.token_info and "new_central" not in self._app_routes:
             self.logger.info(
                 "Unified mode: no 'base_url' or 'cluster_name' was provided for "
@@ -253,7 +184,7 @@ class NewCentralBase:
         client_kwargs = {
             "http2": True,
             "timeout": httpx.Timeout(
-                self._rest_timeout, connect=self._rest_connect_timeout
+                self._timeout, connect=self._connect_timeout
             ),
             "verify": True,
         }
@@ -284,7 +215,7 @@ class NewCentralBase:
         Raises:
             LoginError: If there is an error during token creation.
         """
-        with self._operation(), self._token_lock(app_name):
+        with self._token_lock:
             client_id, client_secret = self._return_client_credentials(app_name)
             client = BackendApplicationClient(client_id)
 
@@ -303,7 +234,7 @@ class NewCentralBase:
                 token = oauth.fetch_token(
                     token_url=token_url,
                     auth=auth,
-                    timeout=(self._auth_connect_timeout, self._auth_timeout),
+                    timeout=(self._connect_timeout, self._timeout),
                 )
                 if "access_token" not in token:
                     msg = (
@@ -344,7 +275,6 @@ class NewCentralBase:
                 self.logger.error(msg)
                 raise LoginError(msg, status_code)
 
-    @_admitted_operation
     def command(
         self,
         api_method,
@@ -560,7 +490,6 @@ class NewCentralBase:
             return json.dumps(api_data)
         return api_data
 
-    @_admitted_operation
     def request_url(
         self,
         url,
@@ -625,8 +554,7 @@ class NewCentralBase:
             # Form-encoded dict
             kwargs["data"] = data
 
-        with self._http_clients_lock:
-            http_client = self._http_clients.get(app_name)
+        http_client = self._http_clients.get(app_name)
         if http_client is None:
             raise RuntimeError(
                 f"No HTTP client is available for '{app_name}'; the connection is closed."
@@ -670,7 +598,7 @@ class NewCentralBase:
 
     def _refresh_token(self, token_key, failed_token=None):
         """Renew a token once per storage key, unless it already changed."""
-        with self._token_lock(token_key):
+        with self._token_lock:
             current_token = self.token_info[token_key].get("access_token")
             if failed_token is not None and current_token != failed_token:
                 return current_token
@@ -697,11 +625,14 @@ class NewCentralBase:
         token_key = self._route_for_app(app_name)["token_key"]
         return self.token_info[token_key].get("access_token")
 
-    def refresh_access_token(self, app_name="new_central"):
-        """Explicitly renew and return an application's token."""
-        with self._operation():
-            token_key = self._route_for_app(app_name)["token_key"]
-            return self._refresh_token(token_key)
+    def refresh_access_token(self, app_name="new_central", failed_token=None):
+        """Explicitly renew and return an application's token.
+
+        ``failed_token`` lets concurrent callers avoid renewing a token that
+        another caller already replaced after the failed request.
+        """
+        token_key = self._route_for_app(app_name)["token_key"]
+        return self._refresh_token(token_key, failed_token)
 
     def _validate_request(self, app_name, method):
         """
@@ -768,32 +699,18 @@ class NewCentralBase:
         return self.scopes
 
     def close(self):
-        """Close all underlying HTTP clients and release connection pool resources."""
-        with self._operation_condition:
-            if getattr(self._operation_local, "depth", 0):
-                raise RuntimeError("Cannot close a connection from an active operation.")
-            if self._lifecycle_state == "closed":
-                return
-            if self._lifecycle_state == "closing":
-                while self._lifecycle_state != "closed":
-                    self._operation_condition.wait()
-                return
-            self._lifecycle_state = "closing"
-            while self._active_operations:
-                self._operation_condition.wait()
-        with self._http_clients_lock:
-            http_clients = self._http_clients
-            self._http_clients = {}
+        """Close all underlying HTTP clients and release connection pool resources.
+
+        Requests made after close raise ``RuntimeError``; the transport is not
+        recreated. Stop streams and worker threads before closing.
+        """
+        http_clients, self._http_clients = self._http_clients, {}
         for app_name, http_client in http_clients.items():
             try:
                 if http_client:
                     http_client.close()
             except Exception as err:
                 self.logger.error(f"Failed closing HTTP client for {app_name}: {err}")
-
-        with self._operation_condition:
-            self._lifecycle_state = "closed"
-            self._operation_condition.notify_all()
 
     def __enter__(self):
         return self
