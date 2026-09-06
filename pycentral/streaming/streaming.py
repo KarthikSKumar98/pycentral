@@ -14,7 +14,6 @@ from .events.ap import ap_events_pb2
 from .events.audit import audit_trail_pb2
 from .events.client import client_pb2
 from .events.event import event_pb2
-from .events.gateway import gw_pb2
 from .events.geofence import geofence_pb2
 from .events.location import location_pb2
 from .events.location_analytics import location_analytics_pb2
@@ -31,7 +30,6 @@ _EVENTS = {
     "ap-events": ("network-monitoring", "v1alpha1", None),
     "clients-events": ("network-monitoring", "v1", client_pb2.StreamClientMessage),
     "switch-events": ("network-monitoring", "v1", sw_pb2.StreamSwitchMessage),
-    "gw-events": ("network-monitoring", "v1", gw_pb2.MonitoringInformation),
     "alert-events": ("network-notifications", "v1", alert_pb2.AlertStreamingMessage),
 }
 _AP_MESSAGES = {
@@ -142,7 +140,8 @@ def decode_frame(event, frame) -> tuple:
         raise StreamingDecodeError("CloudEvent must contain protobuf data.")
     if decoder is None:
         type_name = envelope.proto_data.type_url.rsplit("/", 1)[-1]
-        decoder = _AP_MESSAGES.get(type_name)
+        # Preserve v2's short-name fallback for server package-prefix variants.
+        decoder = _AP_MESSAGES.get(type_name.rsplit(".", 1)[-1])
         if decoder is None:
             raise StreamingDecodeError(f"Unknown ap-events message type: {type_name}.")
     payload = decoder()
@@ -170,7 +169,6 @@ class Streaming:
         - ``ap-events`` for access point updates
         - ``clients-events`` for client updates
         - ``switch-events`` for switch updates
-        - ``gw-events`` for gateway updates
         - ``alert-events`` for alert updates
 
     Args:

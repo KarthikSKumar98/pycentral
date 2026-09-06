@@ -13,7 +13,6 @@ callback as a dictionary.
 | `audit-trail-events` | Audit trail entries |
 | `clients-events` | Client updates |
 | `geofence` | Geofence updates |
-| `gw-events` | Gateway state and statistics |
 | `location` | Location updates |
 | `rssi-events` | RSSI measurements |
 | `switch-events` | Switch updates |
@@ -50,8 +49,8 @@ care about. Pass `filters` as a string or a list of strings:
 ```python
 stream = Streaming(
     central,
-    "gw-events",
-    filters=["com.hpe.greenlake.network-monitoring.v1.gateways.state.device"],
+    "switch-events",
+    filters=["com.hpe.greenlake.network-monitoring.v1.switch.state"],
 )
 ```
 
