@@ -1,8 +1,37 @@
 # (C) Copyright 2025 Hewlett Packard Enterprise Development LP.
 # MIT License
 
+import warnings
 
 from pycentral.exceptions import ParameterError
+
+
+# remove persona in 2.x: delete this helper and its callers' persona params
+def _resolve_device_function(device_function=None, persona=None):
+    """Resolve device_function, accepting the deprecated persona alias.
+
+    Args:
+        device_function (str, optional): Device function value.
+        persona (str, optional): Deprecated alias for device_function.
+
+    Returns:
+        (str or None): The resolved device function.
+
+    Raises:
+        ParameterError: If both device_function and persona are provided.
+    """
+    if persona is None:
+        return device_function
+    if device_function is not None:
+        raise ParameterError(
+            "Provide only one of 'device_function' or 'persona' (deprecated)."
+        )
+    warnings.warn(
+        "'persona' is deprecated; use 'device_function'. 'persona' will be removed in the first non-alpha 2.x release.",
+        DeprecationWarning,
+        stacklevel=3,
+    )
+    return persona
 
 
 def validate_local(local):
