@@ -10,21 +10,6 @@ from ..utils.constants import ALL_DEVICE_FUNCTIONS
 from ..utils.profile_utils import _resolve_device_function
 
 
-def expand_device_function(device_function):
-    """Returns the device functions a value stands for ("ALL" is expanded
-    client-side because the API rejects it).
-
-    Args:
-        device_function (str): Device function or "ALL"
-
-    Returns:
-        (list): List of device functions
-    """
-    if device_function == "ALL":
-        return list(ALL_DEVICE_FUNCTIONS)
-    return [device_function]
-
-
 def get_config_assignments(
     central_conn, scope_id=None, device_function=None, profile_type=None
 ):
@@ -61,12 +46,37 @@ def get_config_assignments(
     return resp["msg"].get("config-assignment", [])
 
 
+def get_scope_maps(central_conn):
+    """Performs a GET call to retrieve the scope maps (deprecated scope-maps API).
+
+    Unlike config-assignments, scope maps also list local profiles.
+
+    Args:
+        central_conn (NewCentralBase): Established Central connection object
+
+    Returns:
+        (list): List of scope map dicts with keys scope-id, scope-name, persona
+            and resource ("<profile-type>/<profile-instance>"). None on failure.
+    """
+    resp = central_conn.command(
+        api_method="GET", api_path=generate_url(SCOPE_URLS["SCOPE-MAPS"])
+    )
+    if resp["code"] != 200:
+        central_conn.logger.error(
+            f"Unable to fetch scope maps data. Error code - {resp['code']}.\n Error Description - {resp['msg']}"
+        )
+        return None
+    return resp["msg"].get("scope-map", [])
+
+
 def create_config_assignment(
     central_conn, scope_id, device_function, profile_type, profile_instance
 ):
     """Performs a POST call to assign a profile instance to a scope.
 
-    "ALL" is sent as one POST with an entry per ALL_DEVICE_FUNCTIONS value.
+    "ALL" is sent unchanged. Whether Central accepts it depends on a feature
+    flag; it may be rejected (400 "Based on feature flag, Persona is not
+    allowed to map").
 
     Args:
         central_conn (NewCentralBase): Established Central connection object
@@ -82,11 +92,10 @@ def create_config_assignment(
         "config-assignment": [
             {
                 "scope-id": str(scope_id),
-                "device-function": df,
+                "device-function": device_function,
                 "profile-type": profile_type,
                 "profile-instance": str(profile_instance),
             }
-            for df in expand_device_function(device_function)
         ]
     }
     return central_conn.command(
@@ -101,7 +110,9 @@ def delete_config_assignment(
 ):
     """Performs a DELETE call to unassign a profile instance from a scope.
 
-    "ALL" is sent as one DELETE per ALL_DEVICE_FUNCTIONS value.
+    "ALL" is sent unchanged. Whether Central accepts it depends on a feature
+    flag; it may be rejected (400 "Based on feature flag, Persona is not
+    allowed to map").
 
     Args:
         central_conn (NewCentralBase): Established Central connection object
@@ -111,19 +122,13 @@ def delete_config_assignment(
         profile_instance (str or int): Profile instance name, e.g. "100"
 
     Returns:
-        (dict): Response of the first failed DELETE call, or of the last one
+        (dict): Response of the DELETE call
     """
-    base = generate_url(SCOPE_URLS["CONFIG_ASSIGNMENTS"])
-    responses = []
-    for df in expand_device_function(device_function):
-        api_path = base + "/" + "/".join(
-            quote(str(s), safe="")
-            for s in (scope_id, df, profile_type, profile_instance)
-        )
-        responses.append(
-            central_conn.command(api_method="DELETE", api_path=api_path)
-        )
-    return next((r for r in responses if r["code"] != 200), responses[-1])
+    api_path = generate_url(SCOPE_URLS["CONFIG_ASSIGNMENTS"]) + "/" + "/".join(
+        quote(str(s), safe="")
+        for s in (scope_id, device_function, profile_type, profile_instance)
+    )
+    return central_conn.command(api_method="DELETE", api_path=api_path)
 
 
 class ScopeMaps:
@@ -149,18 +154,9 @@ class ScopeMaps:
         Returns:
             (list): List of scope map dictionaries if success, empty list otherwise
         """
-        scope_maps_list = []
-        api_method = "GET"
-        api_path = generate_url(SCOPE_URLS["SCOPE-MAPS"])
-        resp = central_conn.command(api_method=api_method, api_path=api_path)
-        if resp["code"] == 200:
-            for mapping in resp["msg"]["scope-map"]:
-                mapping["scope-name"] = int(mapping["scope-name"])
-            scope_maps_list = resp["msg"]["scope-map"]
-        else:
-            central_conn.logger.error(
-                f"Unable to fetch scope maps data. Error code - {resp['code']}.\n Error Description - {resp['msg']}"
-            )
+        scope_maps_list = get_scope_maps(central_conn) or []
+        for mapping in scope_maps_list:
+            mapping["scope-name"] = int(mapping["scope-name"])
         return scope_maps_list
 
     def get_scope_assigned_profiles(self, central_conn, scope_id):
@@ -258,7 +254,11 @@ class ScopeMaps:
         if not device_function:
             raise ParameterError("device_function is required and cannot be empty")
         if isinstance(device_function, str):
-            device_function = expand_device_function(device_function)
+            device_function = (
+                ALL_DEVICE_FUNCTIONS
+                if device_function == "ALL"
+                else [device_function]
+            )
         action = "assign" if api_method == "POST" else "unassign"
         responses = []
         for df in device_function:

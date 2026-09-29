@@ -84,7 +84,7 @@ SCOPE_URLS = {
     "CONFIG_ASSIGNMENTS": "config-assignments",
 }
 
-# What "ALL" expands to client-side (the API rejects device-function "ALL").
+# What "ALL" expands to in the deprecated ScopeMaps.
 ALL_DEVICE_FUNCTIONS = [
     "SERVICE_PERSONA",
     "HYBRID_NAC",

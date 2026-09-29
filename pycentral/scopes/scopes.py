@@ -16,7 +16,7 @@ from ..utils.scope_utils import (
 from .device import Device
 from .site import Site
 from .site_collection import Site_Collection
-from .scope_maps import get_config_assignments
+from .scope_maps import get_config_assignments, get_scope_maps
 from .device_group import Device_Group
 from ..utils import SCOPE_URLS, generate_url
 from ..utils.profile_utils import _resolve_device_function
@@ -850,7 +850,12 @@ class Scopes(ScopeBase):
         return f"Global ID - {self.id}"
 
     def get_scope_profiles(self):
-        """Fetches all config assignments and records them on the matching scope elements."""
+        """Fetches all profile assignments and records them on the matching scope elements.
+
+        Library assignments come from config-assignments; scope-map rows not
+        among them are local profiles. Each entry's object_type is "LIBRARY"
+        or "LOCAL".
+        """
         assignments = get_config_assignments(central_conn=self.central_conn)
         if assignments is None:
             self.central_conn.logger.error(
@@ -860,15 +865,37 @@ class Scopes(ScopeBase):
         self.central_conn.logger.info(
             f"Total config assignments fetched from account: {len(assignments)}"
         )
+        library = [
+            (
+                int(a["scope-id"]),
+                a["device-function"],
+                f"{a['profile-type']}/{a['profile-instance']}",
+            )
+            for a in assignments
+        ]
+        # ponytail: local profiles come from deprecated scope-maps (config-assignments has no local view); switch when Central adds one
+        scope_maps = get_scope_maps(central_conn=self.central_conn)
+        if scope_maps is None:
+            self.central_conn.logger.warning(
+                "Unable to fetch scope maps; local profiles could not be loaded"
+            )
+            scope_maps = []
+        library_keys = set(library)
+        local = [
+            (int(m["scope-id"]), m["persona"], m["resource"]) for m in scope_maps
+        ]
+        local = [row for row in local if row not in library_keys]
         for element in self._lookup_maps["id"].values():
             element.assigned_profiles = []
-        for assignment in assignments:
-            element = self._lookup_maps["id"].get(int(assignment["scope-id"]))
-            if element is not None:
-                element.add_profile(
-                    name=f"{assignment['profile-type']}/{assignment['profile-instance']}",
-                    device_function=assignment["device-function"],
-                )
+        for object_type, rows in (("LIBRARY", library), ("LOCAL", local)):
+            for scope_id, device_function, resource in rows:
+                element = self._lookup_maps["id"].get(scope_id)
+                if element is not None:
+                    element.add_profile(
+                        name=resource,
+                        device_function=device_function,
+                        object_type=object_type,
+                    )
 
     def assign_profile_to_scope(
         self,

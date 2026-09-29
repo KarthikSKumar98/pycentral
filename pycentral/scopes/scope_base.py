@@ -1,11 +1,7 @@
 # (C) Copyright 2025 Hewlett Packard Enterprise Development LP.
 # MIT License
 
-from .scope_maps import (
-    create_config_assignment,
-    delete_config_assignment,
-    expand_device_function,
-)
+from .scope_maps import create_config_assignment, delete_config_assignment
 from ..exceptions import ParameterError
 from ..utils.profile_utils import _resolve_device_function
 from ..utils.scope_utils import (
@@ -61,7 +57,8 @@ class ScopeBase:
             profile_persona (str, optional): Deprecated alias of device_function.
             device_function (str, optional): Device function of the profile,
                 e.g. "CAMPUS_AP" or "ALL". Optional if assigning to a device
-                (defaults to the device's config_persona).
+                (defaults to the device's config_persona). "ALL" depends on a
+                Central feature flag and may be rejected; the API's error is logged.
 
         Returns:
             (bool): True if the profile assignment was successful, False otherwise
@@ -145,8 +142,7 @@ class ScopeBase:
             f"Successfully {operation}ed profile {profile_name} ({device_function}) for {self.get_name()}"
         )
         record = self.add_profile if operation == "assign" else self.remove_profile
-        for df in expand_device_function(device_function):
-            record(name=profile_name, device_function=df)
+        record(name=profile_name, device_function=device_function)
         return True
 
     def _resolve_scope_device_function(self, device_function):
@@ -184,7 +180,7 @@ class ScopeBase:
         return config_persona
 
     def add_profile(
-        self, name, persona=None, *, device_function=None
+        self, name, persona=None, *, device_function=None, object_type="LIBRARY"
     ):  # remove persona in 2.x
         """Helper function that adds a profile to the assigned profiles of the scope in the SDK.
 
@@ -192,6 +188,7 @@ class ScopeBase:
             name (str): Profile resource string "<profile-type>/<profile-instance>"
             persona (str, optional): Deprecated alias of device_function.
             device_function (str): Device function of the profile
+            object_type (str, optional): "LIBRARY" or "LOCAL"
         """
         # remove persona in 2.x
         device_function = _resolve_device_function(
@@ -202,6 +199,7 @@ class ScopeBase:
                 "device_function": device_function,
                 "persona": device_function,  # remove persona in 2.x
                 "resource": name,
+                "object_type": object_type,
             }
         )
 
