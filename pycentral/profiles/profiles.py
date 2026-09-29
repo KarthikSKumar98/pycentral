@@ -329,6 +329,38 @@ class Profiles:
 
             obj.__dict__[k] = v
 
+    def _checked_path(self, operation):
+        """Return self's path after verifying central_conn and path are set.
+
+        Args:
+            operation (str): Operation name used in the error message.
+
+        Returns:
+            (str): The URL path of the profile.
+
+        Raises:
+            VerificationError: If central_conn or path is missing.
+        """
+        if not getattr(self, "central_conn", None) or not self.get_path():
+            raise VerificationError(
+                f"{operation} failed - Required attributes missing in Profile. "
+                "Use Profiles.set_path() and Profiles.set_central_conn() to"
+                " ensure central_conn and path are set."
+            )
+        return self.get_path()
+
+    def _is_bulk(self):
+        """Return True if bulk_key is set and the path does not end with the name.
+
+        Returns:
+            (bool): True if the bulk API should be used.
+        """
+        name = getattr(self, "name", None)
+        last = self.get_path().rsplit("/", 1)[-1]
+        return bool(self.get_bulk_key()) and not (
+            name and last in (name, urllib.parse.quote(name, safe=""))
+        )
+
     def apply(self):
         """Main method used to update or create a Profile.
 
@@ -365,38 +397,18 @@ class Profiles:
         body = dict()
 
         params = self.get_local_parameters()
-
-        if not getattr(self, "central_conn", None) or not self.get_path():
-            raise VerificationError(
-                "Create failed - Required attributes missing in Profile. "
-                "Use Profiles.set_path() and Profiles.set_central_conn() to"
-                " ensure central_conn and path are set."
-            )
-
-        path = self.get_path()
+        path = self._checked_path("Create")
 
         if isinstance(self.config_dict, dict):
             body = self.config_dict.copy()
 
-        # Logic for handling bulk profile configuration
-        # Use bulk API endpoint if bulk_key is set and name or identifier is
-        # not provided in the path (single operation)
-        if (
-            "bulk_key" in self.object_data
-            and self.name not in self.get_path()
-            and isinstance(self.config_dict, dict)
-        ):
-            # Bulk API expects a list of dictionaries therefor if config_dict
-            # is a dictionary it's wrapped in a list to be sent
-            body = {self.object_data["bulk_key"]: [self.config_dict.copy()]}
-        elif (
-            "bulk_key" in self.object_data
-            and self.name not in self.get_path()
-            and isinstance(self.config_dict, list)
-        ):
-            # Bulk API expects a list of dictionaries therefore if config_dict
-            # is a list it's left alone
-            body = {self.object_data["bulk_key"]: self.config_dict}
+        # Use the bulk API if bulk_key is set and the path does not end with
+        # the profile name/identifier (single operation). The bulk API
+        # expects a list of dictionaries, so a dict config is wrapped.
+        if self._is_bulk() and isinstance(self.config_dict, dict):
+            body = {self.get_bulk_key(): [self.config_dict.copy()]}
+        elif self._is_bulk() and isinstance(self.config_dict, list):
+            body = {self.get_bulk_key(): self.config_dict}
 
         resp = self.central_conn.command(
             "POST", path, api_data=body, api_params=params
@@ -436,13 +448,7 @@ class Profiles:
         """
         result = False
         response = None
-        if not getattr(self, "central_conn", None) or not self.get_path():
-            raise VerificationError(
-                "Get failed - Required attributes missing in Profile. "
-                "Please ensure central_conn and object_data['path'] are set."
-            )
-        # Name / id may need to be appended to path before calling GET
-        path = self.get_path()
+        path = self._checked_path("Get")
         params = self.get_local_parameters()
 
         # Need to include `view-type` for GET requests
@@ -611,19 +617,12 @@ class Profiles:
         body = None
         # Dictionary to contain differences found for reporting
         diff_dict_list = []
-        path = self.object_data["path"]
+        path = self._checked_path("Update")
         new_config = self.config_dict.copy()
 
         # If update_data provided, merge into new_config taken from self.config_dict
         if update_data:
             new_config.update(update_data)
-
-        # central_conn should be validated in previous self.get() but just in case
-        if not hasattr(self, "central_conn") or not self.central_conn:
-            raise VerificationError(
-                "Update failed - Central connection required but missing in Profile. "
-                "Please provide a valid Central connection object"
-            )
 
         # Check for Central profile
         central_obj = None
@@ -659,11 +658,7 @@ class Profiles:
             if isinstance(new_config, list) and self.get_bulk_key():
                 # If new_config is a list, wrap it in a dict with bulk_key
                 body = {self.get_bulk_key(): new_config}
-            elif (
-                isinstance(new_config, dict)
-                and self.get_bulk_key()
-                and self.name not in self.get_path()
-            ):
+            elif isinstance(new_config, dict) and self._is_bulk():
                 # If new_config is a dict, wrap it in a dict with bulk_key
                 body = {self.get_bulk_key(): [new_config]}
             else:
@@ -697,9 +692,12 @@ class Profiles:
         """Delete a profile from Central.
 
         Returns:
-            (tuple(bool, dict)): Boolean of operation result, and dict of the create API response.
+            (tuple(bool, dict)): Boolean of operation result, and dict of the delete API response.
+
+        Raises:
+            VerificationError: If required attributes are missing.
         """
-        path = self.object_data["path"]
+        path = self._checked_path("Delete")
         params = self.get_local_parameters()
 
         resp = self.central_conn.command(
