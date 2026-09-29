@@ -13,7 +13,7 @@ class Profiles:
         self,
         name=None,
         central_conn=None,
-        config_dict=dict(),
+        config_dict=None,
         path=None,
         local=None,
     ):
@@ -36,7 +36,7 @@ class Profiles:
             ParameterError: If name is provided but not a valid string.
         """
         # Initialize attrs that will be later defined by child
-        self.config_dict = config_dict
+        self.config_dict = {} if config_dict is None else config_dict
         self.object_data = dict()
 
         if name and isinstance(name, str):
@@ -160,9 +160,7 @@ class Profiles:
         Returns:
             (str|None): The bulk key if set, otherwise None.
         """
-        if "bulk_key" in self.object_data:
-            return self.object_data["bulk_key"]
-        return None
+        return self.object_data.get("bulk_key")
 
     def set_path(self, path):
         """Set the URL path for the profile.
@@ -200,9 +198,7 @@ class Profiles:
         Returns:
             (str|None): The URL path if set, otherwise None.
         """
-        if "path" in self.object_data:
-            return self.object_data["path"]
-        return None
+        return self.object_data.get("path")
 
     def set_central_conn(self, central_conn):
         """Set the central connection object for the profile.
