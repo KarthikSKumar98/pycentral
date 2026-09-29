@@ -1,13 +1,12 @@
 # (C) Copyright 2025 Hewlett Packard Enterprise Development LP.
 # MIT License
 
-import warnings
 from urllib.parse import quote
 
 from ..exceptions import ParameterError
 from ..utils import SCOPE_URLS, generate_url
 from ..utils.constants import ALL_DEVICE_FUNCTIONS
-from ..utils.profile_utils import _resolve_device_function
+from ..utils.profile_utils import _resolve_device_function, _warn_deprecated
 
 
 def get_config_assignments(
@@ -136,13 +135,11 @@ class ScopeMaps:
     delete_config_assignment (config-assignments API) instead."""
 
     def __init__(self):
-        warnings.warn(
+        _warn_deprecated(
             "ScopeMaps (scope-maps API) is deprecated; use "
             "pycentral.scopes.scope_maps.get_config_assignments, "
             "create_config_assignment and delete_config_assignment "
-            "(config-assignments API) instead.",
-            DeprecationWarning,
-            stacklevel=2,
+            "(config-assignments API) instead."
         )
 
     def get(self, central_conn):

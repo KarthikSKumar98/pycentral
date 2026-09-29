@@ -1,9 +1,25 @@
 # (C) Copyright 2025 Hewlett Packard Enterprise Development LP.
 # MIT License
 
+import os
+import sys
 import warnings
 
 from pycentral.exceptions import ParameterError
+
+_PKG_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__))) + os.sep
+
+
+def _warn_deprecated(message):
+    """Emit a DeprecationWarning attributed to the first caller outside pycentral.
+
+    Default filters only show DeprecationWarning attributed to __main__, so the
+    warning must point at user code, not at a pycentral frame.
+    """
+    frame, level = sys._getframe(1), 2
+    while frame and os.path.abspath(frame.f_code.co_filename).startswith(_PKG_DIR):
+        frame, level = frame.f_back, level + 1
+    warnings.warn(message, DeprecationWarning, stacklevel=level)
 
 
 # remove persona in 2.x: delete this helper and its callers' persona params
@@ -26,10 +42,8 @@ def _resolve_device_function(device_function=None, persona=None):
         raise ParameterError(
             "Provide only one of 'device_function' or 'persona' (deprecated)."
         )
-    warnings.warn(
-        "'persona' is deprecated; use 'device_function'. 'persona' will be removed in the first non-alpha 2.x release.",
-        DeprecationWarning,
-        stacklevel=3,
+    _warn_deprecated(
+        "'persona' is deprecated; use 'device_function'. 'persona' will be removed in the first non-alpha 2.x release."
     )
     return persona
 

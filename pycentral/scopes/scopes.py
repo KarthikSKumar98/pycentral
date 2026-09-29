@@ -1,8 +1,6 @@
 # (C) Copyright 2025 Hewlett Packard Enterprise Development LP.
 # MIT License
 
-import warnings
-
 from .scope_base import ScopeBase
 from ..utils.scope_utils import (
     get_scope_elements,
@@ -19,7 +17,7 @@ from .site_collection import Site_Collection
 from .scope_maps import get_config_assignments, get_scope_maps
 from .device_group import Device_Group
 from ..utils import SCOPE_URLS, generate_url
-from ..utils.profile_utils import _resolve_device_function
+from ..utils.profile_utils import _resolve_device_function, _warn_deprecated
 from ..exceptions import ParameterError
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -1010,9 +1008,7 @@ class Scopes(ScopeBase):
         Returns:
             (bool): True if successful, False otherwise
         """
-        warnings.warn(
-            "move_devices_between_sites is deprecated: moving devices between sites via NBAPI is not supported. It always returns False.",
-            DeprecationWarning,
-            stacklevel=2,
+        _warn_deprecated(
+            "move_devices_between_sites is deprecated: moving devices between sites via NBAPI is not supported. It always returns False."
         )
         return False
