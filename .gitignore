@@ -128,8 +128,3 @@ dmypy.json
 # Pyre type checker
 .pyre/
 .github/
-
-# Local prod API captures
-.live-capture/
-
-token.yaml
