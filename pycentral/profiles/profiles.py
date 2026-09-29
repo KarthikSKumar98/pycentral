@@ -6,6 +6,7 @@ from pycentral.utils import profile_utils, url_utils
 from pycentral import NewCentralBase
 from copy import deepcopy
 import re
+import urllib.parse
 
 
 class Profiles:
@@ -52,18 +53,14 @@ class Profiles:
 
         if path and isinstance(path, str):
             if name:
-                # URL encode name to handle spaces
-                formatted_name = name.replace(" ", "%20")
-                if path.endswith(name):
-                    # Replace name in path with URL encoded name
-                    path = path[: -len(name)] + formatted_name
-
-                # Append name to path if not already present
-                if not path.endswith(f"/{formatted_name}"):
-                    if path.endswith("/"):
-                        path = f"{path}{formatted_name}"
-                    else:
-                        path = f"{path}/{formatted_name}"
+                # Append URL-encoded name, replacing it if already present
+                identifier = urllib.parse.quote(name, safe="")
+                path = path.rstrip("/")
+                for suffix in (f"/{name}", f"/{identifier}"):
+                    if path.endswith(suffix):
+                        path = path[: -len(suffix)]
+                        break
+                path = f"{path}/{identifier}"
             self.set_path(path)
         elif path and not isinstance(path, str):
             raise ParameterError(
@@ -166,9 +163,10 @@ class Profiles:
     def set_path(self, path):
         """Set the URL path for the profile.
 
-        Sets self.object_data['path']. Does NOT include base_url
-        (https://<base_url>.com/) or configuration prefix
-        ("network-config/v1alpha1/").
+        Sets self.object_data['path']. Any base_url (https://<base_url>.com/)
+        is stripped. A path already starting with a configuration prefix
+        (ex: "network-config/v1/" or "network-config/v1alpha1/") is kept as
+        is, otherwise url_utils.get_prefix() is prepended.
 
         Args:
             path (str): URL path for the profile, ex: "layer2-vlan".
@@ -178,14 +176,9 @@ class Profiles:
         """
         # Remove any URL prefix matching https://.*\.com
         if path:
-            path = re.sub(r"https://.*?\.com", "", path)
-            if path.startswith("/"):
-                path = path[1:]
-            # Include NETWORKING_PREFIX if present
-            prefix = url_utils.get_prefix()
-            if prefix not in path:
-                path = prefix + path
-            # path = re.sub(prefix, "", path)
+            path = re.sub(r"https://.*?\.com", "", path).lstrip("/")
+            if not re.match(r"network-config/v\d+\w*/", path):
+                path = url_utils.get_prefix() + path
             self.object_data["path"] = path
         else:
             raise ParameterError(
@@ -726,8 +719,10 @@ class Profiles:
         """Create a configuration profile.
 
         Args:
-            path (str): The API endpoint for request, omitting base_url - it's recommended
-                to use the helper function pycentral.utils.url_utils.generate_url().
+            path (str): The API endpoint for request, omitting base_url - build it with
+                pycentral.utils.url_utils.generate_url(), passing the profile name/id
+                as identifier, e.g. generate_url("layer2-vlan", identifier=100).
+                Omit identifier when using bulk_key.
             config_dict (dict): Dictionary containing API keys & values used to
                 create the configuration profile.
             central_conn (NewCentralBase): Established Central connection object.
@@ -789,13 +784,14 @@ class Profiles:
         """Get existing profile(s) from Central.
 
         Args:
-            path (str): The API endpoint for request, omitting base_url - it's recommended
-                to use the helper function pycentral.utils.url_utils.generate_url(). If
-                the path does not include the profile name/id, the API will return all
-                profiles for that type.
+            path (str): The API endpoint for request, omitting base_url - build it with
+                pycentral.utils.url_utils.generate_url(). Pass the profile name/id as
+                identifier to get one profile, e.g.
+                generate_url("layer2-vlan", identifier=100); without it the API
+                returns all profiles of that type.
             central_conn (NewCentralBase): Established Central connection object.
-            local (dict, optional): A dictionary containing keys scope-id type int and device-function
-                type str required to designate a local profile.
+            local (dict, optional): Local profile attributes, e.g.
+                {"scope_id": 12345, "device_function": "CAMPUS_AP"}.
 
         Returns:
             (tuple(bool, dict)): Boolean of operation result, and dict of the get API response.
@@ -830,8 +826,10 @@ class Profiles:
         """Update a configuration profile.
 
         Args:
-            path (str): The API endpoint for request, omitting base_url - it's recommended
-                to use the helper function pycentral.utils.url_utils.generate_url().
+            path (str): The API endpoint for request, omitting base_url - build it with
+                pycentral.utils.url_utils.generate_url(), passing the profile name/id
+                as identifier, e.g. generate_url("layer2-vlan", identifier=100).
+                Omit identifier when using bulk_key.
             config_dict (dict): Dictionary containing API keys & values used to
                 update the configuration profile.
             central_conn (NewCentralBase): Established Central connection object.
@@ -886,11 +884,12 @@ class Profiles:
         """Delete a configuration profile.
 
         Args:
-            path (str): The API endpoint for request, omitting base_url - it's recommended
-                to use the helper function pycentral.utils.url_utils.generate_url().
+            path (str): The API endpoint for request, omitting base_url - build it with
+                pycentral.utils.url_utils.generate_url(), passing the profile name/id
+                as identifier, e.g. generate_url("layer2-vlan", identifier=100).
             central_conn (NewCentralBase): Established Central connection object.
-            local (dict, optional): A dictionary containing keys scope-id type int and device-function
-                type str required to designate a local profile.
+            local (dict, optional): Local profile attributes, e.g.
+                {"scope_id": 12345, "device_function": "CAMPUS_AP"}.
 
         Returns:
             (tuple(bool, dict)): Boolean of operation result, and dict of the delete API response.
@@ -908,9 +907,6 @@ class Profiles:
         # defaults to None if local is not provided
         params = profile_utils.validate_local(local)
 
-        path_split = path.split("/")
-        resource = path_split[len(path_split) - 2]
-
         resp = central_conn.command(
             "DELETE", path, api_params=params, headers={"Accept": "*/*"}
         )
@@ -918,7 +914,7 @@ class Profiles:
         if resp["code"] == 200:
             result = True
             central_conn.logger.info(
-                f"{resource} profile successfully deleted!"
+                f"{path} profile successfully deleted!"
             )
         else:
             error = resp["msg"]
@@ -937,8 +933,9 @@ class Profiles:
             bulk_key (str): The key required to wrap the configurations for
                 multiple profiles for the bulk API - refer to the API reference for valid values.
                 ex: "profile" for DNS, "layer2-vlan" for VLANs, etc.
-            path (str): The API endpoint for request, omitting base_url - it's recommended
-                to use the helper function pycentral.utils.url_utils.generate_url().
+            path (str): The API endpoint for request, omitting base_url - build it with
+                pycentral.utils.url_utils.generate_url() without identifier,
+                e.g. generate_url("layer2-vlan").
             central_conn (NewCentralBase): Established Central connection object.
             list_dict (list, optional): List of profile configuration dictionaries.
             list_obj (list, optional): List of Profiles objects containing the config_dict
@@ -1007,8 +1004,9 @@ class Profiles:
             bulk_key (str): The key required to wrap the configurations for
                 multiple profiles for the bulk API - refer to the API reference for valid values.
                 ex: "profile" for DNS, "layer2-vlan" for VLANs, etc.
-            path (str): The API endpoint for request, omitting base_url - it's recommended
-                to use the helper function pycentral.utils.url_utils.generate_url().
+            path (str): The API endpoint for request, omitting base_url - build it with
+                pycentral.utils.url_utils.generate_url() without identifier,
+                e.g. generate_url("layer2-vlan").
             central_conn (NewCentralBase): Established Central connection object.
             list_dict (list, optional): List of profile configuration dictionaries.
             list_obj (list, optional): List of Profiles objects containing the config_dict attribute.
@@ -1063,11 +1061,12 @@ class Profiles:
         """Delete multiple configuration profiles.
 
         Args:
-            path_list (list): List of API paths as type string for requests. It's recommended
-                to use the helper function pycentral.utils.url_utils.generate_url().
+            path_list (list): List of API paths as type string for requests. Build each with
+                pycentral.utils.url_utils.generate_url(), passing the profile name/id
+                as identifier, e.g. generate_url("layer2-vlan", identifier=100).
             central_conn (NewCentralBase): Established Central connection object.
-            local (dict): A dictionary containing keys scope-id type int and device-function
-                type str required to designate a local profile.
+            local (dict, optional): Local profile attributes, e.g.
+                {"scope_id": 12345, "device_function": "CAMPUS_AP"}.
             error_on_fail (bool, optional): Flag to indicate whether to log an error
                 with the logger on failure. When flag is set True each delete operation
                 that fails will log the error message from the API response with the
@@ -1091,18 +1090,16 @@ class Profiles:
         params = profile_utils.validate_local(local)
 
         for path in path_list:
-            path_split = path.split("/")
-            resource = path_split[len(path_split) - 2]
             resp = central_conn.command(
                 "DELETE", path, api_params=params, headers={"Accept": "*/*"}
             )
             if resp["code"] == 200:
-                central_conn.logger.info(f"{resource} successfully deleted!")
+                central_conn.logger.info(f"{path} successfully deleted!")
             elif error_on_fail:
                 error = resp["msg"]
                 err_str = f"Error-message -> {error}"
                 central_conn.logger.error(
-                    f"Failed to delete {resource} . {err_str}"
+                    f"Failed to delete {path} . {err_str}"
                 )
             else:
                 failures.append(path)
