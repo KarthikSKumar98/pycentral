@@ -219,8 +219,8 @@ class Profiles:
                 otherwise None.
         """
 
-        if not hasattr(self, "central_conn") or not self.central_conn:
-            self.central_conn.logger.warning(
+        if not getattr(self, "central_conn", None):
+            NewCentralBase.set_logger(NewCentralBase, "INFO").warning(
                 "No Central connection provided - set central_conn before making API calls"
             )
             return None
@@ -254,7 +254,7 @@ class Profiles:
         Raises:
             ParameterError: If config_key is not provided or not a valid string.
         """
-        if not config_key and isinstance(config_key) is not str:
+        if not config_key or not isinstance(config_key, str):
             raise ParameterError(
                 "config_key must be a valid string containing the key to update"
             )
