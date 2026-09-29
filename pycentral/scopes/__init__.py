@@ -2,11 +2,11 @@
 # MIT License
 
 from .site import Site
-from .site_collection import Site_Collection
+from .site_collection import Site_Collection, SiteCollection
 from .scopes import Scopes
 from .scope_maps import ScopeMaps
 from .device import Device
-from .device_group import Device_Group
+from .device_group import Device_Group, DeviceGroup
 
 __all__ = [
     "Site",
@@ -15,4 +15,6 @@ __all__ = [
     "ScopeMaps",
     "Device",
     "Device_Group",
+    "SiteCollection",
+    "DeviceGroup",
 ]
