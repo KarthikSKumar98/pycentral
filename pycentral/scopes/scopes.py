@@ -824,7 +824,9 @@ class Scopes(ScopeBase):
 
         api_method = "GET"
         api_path = generate_url(SCOPE_URLS["HIERARCHY"])
-        api_params = {"id": str(scope_id), "type": scope.lower()}
+        # v1 hierarchy types verified live; device groups are "device_collection"
+        hierarchy_type = {"device_group": "device_collection"}.get(scope, scope)
+        api_params = {"id": str(scope_id), "type": hierarchy_type}
         resp = self.central_conn.command(
             api_method=api_method, api_path=api_path, api_params=api_params
         )
@@ -866,7 +868,7 @@ class Scopes(ScopeBase):
     def assign_profile_to_scope(
         self,
         profile_name,
-        profile_persona=None,
+        profile_persona=None,  # remove persona in 2.x
         scope=None,
         scope_name=None,
         scope_id=None,
@@ -902,7 +904,7 @@ class Scopes(ScopeBase):
     def unassign_profile_to_scope(
         self,
         profile_name,
-        profile_persona=None,
+        profile_persona=None,  # remove persona in 2.x
         scope=None,
         scope_name=None,
         scope_id=None,

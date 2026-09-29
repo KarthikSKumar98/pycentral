@@ -1,7 +1,11 @@
 # (C) Copyright 2025 Hewlett Packard Enterprise Development LP.
 # MIT License
 
-from .scope_maps import create_config_assignment, delete_config_assignment
+from .scope_maps import (
+    create_config_assignment,
+    delete_config_assignment,
+    expand_device_function,
+)
 from ..exceptions import ParameterError
 from ..utils.profile_utils import _resolve_device_function
 from ..utils.scope_utils import (
@@ -42,7 +46,11 @@ class ScopeBase:
         return fetch_attribute(self, "type")
 
     def assign_profile(
-        self, profile_name, profile_persona=None, *, device_function=None
+        self,
+        profile_name,
+        profile_persona=None,  # remove persona in 2.x
+        *,
+        device_function=None,
     ):
         """Assigns a profile to the scope via the config-assignments API.
 
@@ -68,7 +76,11 @@ class ScopeBase:
         return self._config_assignment("assign", profile_name, device_function)
 
     def unassign_profile(
-        self, profile_name, profile_persona=None, *, device_function=None
+        self,
+        profile_name,
+        profile_persona=None,  # remove persona in 2.x
+        *,
+        device_function=None,
     ):
         """Unassigns a profile from the scope via the config-assignments API.
 
@@ -132,12 +144,9 @@ class ScopeBase:
         self.central_conn.logger.info(
             f"Successfully {operation}ed profile {profile_name} ({device_function}) for {self.get_name()}"
         )
-        if operation == "assign":
-            self.add_profile(name=profile_name, device_function=device_function)
-        else:
-            self.remove_profile(
-                name=profile_name, device_function=device_function
-            )
+        record = self.add_profile if operation == "assign" else self.remove_profile
+        for df in expand_device_function(device_function):
+            record(name=profile_name, device_function=df)
         return True
 
     def _resolve_scope_device_function(self, device_function):
@@ -174,7 +183,9 @@ class ScopeBase:
             return None
         return config_persona
 
-    def add_profile(self, name, persona=None, *, device_function=None):
+    def add_profile(
+        self, name, persona=None, *, device_function=None
+    ):  # remove persona in 2.x
         """Helper function that adds a profile to the assigned profiles of the scope in the SDK.
 
         Args:
@@ -194,7 +205,9 @@ class ScopeBase:
             }
         )
 
-    def remove_profile(self, name, persona=None, *, device_function=None):
+    def remove_profile(
+        self, name, persona=None, *, device_function=None
+    ):  # remove persona in 2.x
         """Helper function that removes a profile from the assigned profiles of the scope in the SDK.
 
         Args:

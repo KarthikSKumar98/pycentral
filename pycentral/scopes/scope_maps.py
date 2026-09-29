@@ -6,8 +6,23 @@ from urllib.parse import quote
 
 from ..exceptions import ParameterError
 from ..utils import SCOPE_URLS, generate_url
-from ..utils.constants import VALID_DEVICE_FUNCTIONS
+from ..utils.constants import ALL_DEVICE_FUNCTIONS, VALID_DEVICE_FUNCTIONS
 from ..utils.profile_utils import _resolve_device_function
+
+
+def expand_device_function(device_function):
+    """Returns the device functions a value stands for ("ALL" is expanded
+    client-side because the API rejects it).
+
+    Args:
+        device_function (str): Device function or "ALL"
+
+    Returns:
+        (list): List of device functions
+    """
+    if device_function == "ALL":
+        return list(ALL_DEVICE_FUNCTIONS)
+    return [device_function]
 
 
 def get_config_assignments(
@@ -51,6 +66,8 @@ def create_config_assignment(
 ):
     """Performs a POST call to assign a profile instance to a scope.
 
+    "ALL" is sent as one POST with an entry per ALL_DEVICE_FUNCTIONS value.
+
     Args:
         central_conn (NewCentralBase): Established Central connection object
         scope_id (int or str): ID of the scope
@@ -65,10 +82,11 @@ def create_config_assignment(
         "config-assignment": [
             {
                 "scope-id": str(scope_id),
-                "device-function": device_function,
+                "device-function": df,
                 "profile-type": profile_type,
                 "profile-instance": str(profile_instance),
             }
+            for df in expand_device_function(device_function)
         ]
     }
     return central_conn.command(
@@ -83,6 +101,8 @@ def delete_config_assignment(
 ):
     """Performs a DELETE call to unassign a profile instance from a scope.
 
+    "ALL" is sent as one DELETE per ALL_DEVICE_FUNCTIONS value.
+
     Args:
         central_conn (NewCentralBase): Established Central connection object
         scope_id (int or str): ID of the scope
@@ -91,14 +111,19 @@ def delete_config_assignment(
         profile_instance (str or int): Profile instance name, e.g. "100"
 
     Returns:
-        (dict): Response of the DELETE call
+        (dict): Response of the first failed DELETE call, or of the last one
     """
-    segments = (scope_id, device_function, profile_type, profile_instance)
-    api_path = "/".join(
-        [generate_url(SCOPE_URLS["CONFIG_ASSIGNMENTS"])]
-        + [quote(str(segment), safe="") for segment in segments]
-    )
-    return central_conn.command(api_method="DELETE", api_path=api_path)
+    responses = []
+    for df in expand_device_function(device_function):
+        segments = (scope_id, df, profile_type, profile_instance)
+        api_path = "/".join(
+            [generate_url(SCOPE_URLS["CONFIG_ASSIGNMENTS"])]
+            + [quote(str(segment), safe="") for segment in segments]
+        )
+        responses.append(
+            central_conn.command(api_method="DELETE", api_path=api_path)
+        )
+    return next((r for r in responses if r["code"] != 200), responses[-1])
 
 
 class ScopeMaps:
@@ -163,7 +188,7 @@ class ScopeMaps:
         central_conn,
         scope_id,
         profile_name,
-        persona=None,
+        persona=None,  # remove persona in 2.x
         *,
         device_function=None,
     ):
@@ -194,7 +219,7 @@ class ScopeMaps:
         central_conn,
         scope_id,
         profile_name,
-        persona=None,
+        persona=None,  # remove persona in 2.x
         *,
         device_function=None,
     ):
@@ -233,7 +258,7 @@ class ScopeMaps:
         if not device_function:
             raise ParameterError("device_function is required and cannot be empty")
         if device_function == "ALL":
-            device_function = VALID_DEVICE_FUNCTIONS
+            device_function = ALL_DEVICE_FUNCTIONS
         elif isinstance(device_function, str):
             device_function = [device_function]
         action = "assign" if api_method == "POST" else "unassign"

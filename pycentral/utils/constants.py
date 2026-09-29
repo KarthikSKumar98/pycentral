@@ -87,7 +87,7 @@ SCOPE_URLS = {
     "CONFIG_ASSIGNMENTS": "config-assignments",
 }
 
-# Device functions accepted by config-assignments ("ALL" is also accepted).
+# Device functions accepted by config-assignments.
 VALID_DEVICE_FUNCTIONS = [
     "MOBILITY_GW",
     "BRANCH_GW",
@@ -109,6 +109,22 @@ VALID_DEVICE_FUNCTIONS = [
 ]
 VALID_PERSONAS = VALID_DEVICE_FUNCTIONS  # remove persona in 2.x
 
+# What "ALL" expands to client-side (the API rejects device-function "ALL").
+ALL_DEVICE_FUNCTIONS = [
+    "SERVICE_PERSONA",
+    "HYBRID_NAC",
+    "CORE_SWITCH",
+    "BRIDGE",
+    "CAMPUS_AP",
+    "IOT",
+    "MOBILITY_GW",
+    "AGG_SWITCH",
+    "BRANCH_GW",
+    "VPNC",
+    "ACCESS_SWITCH",
+    "MICROBRANCH_AP",
+]
+
 __all__ = [
     "CLUSTER_BASE_URLS",
     "SUPPORTED_CONFIG_PERSONAS",
@@ -117,4 +133,5 @@ __all__ = [
     "SCOPE_URLS",
     "VALID_DEVICE_FUNCTIONS",
     "VALID_PERSONAS",
+    "ALL_DEVICE_FUNCTIONS",
 ]
