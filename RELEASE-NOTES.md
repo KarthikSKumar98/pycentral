@@ -29,7 +29,6 @@ This release moves scope management to the v1 configuration APIs, replaces scope
 - **Local profile parameters (#94)**
   - Docstrings corrected. Query parameters are sent kebab-case (`object-type`, `scope-id`, `device-function`, `view-type`) as documented by the API. A boolean `scope_id` is rejected.
 - Network-config query parameters are standardized to kebab-case.
-- Added PEP 8 aliases `SiteCollection` and `DeviceGroup`.
 - Unknown fields in API responses no longer raise errors while loading scopes.
 
 ### Bug Fixes

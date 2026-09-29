@@ -435,6 +435,3 @@ class Site_Collection(ScopeBase):
             api_body["siteIds"] = [str(site_id) for site_id in self.sites]
 
         return api_body
-
-
-SiteCollection = Site_Collection

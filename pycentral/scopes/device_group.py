@@ -46,6 +46,3 @@ class Device_Group(ScopeBase):
             raise Exception(
                 "Currently, Device Group requires attributes from API response to be created."
             )
-
-
-DeviceGroup = Device_Group
