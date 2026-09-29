@@ -456,7 +456,8 @@ class Profiles:
             params["view-type"] = "LOCAL"
 
         resp = self.central_conn.command("GET", path, api_params=params)
-        if resp["code"] == 200 and "msg" in resp.keys():
+        # An empty 200 response means the profile does not exist
+        if resp["code"] == 200 and resp.get("msg"):
             self.materialized = True
             result = True
             response = resp["msg"].copy()
@@ -474,6 +475,7 @@ class Profiles:
             return result, response
         else:
             self.materialized = False
+            self.central_conn.logger.warning(f"Profile not found at {path}")
             return result, response
 
     def compare_objects(self, obj1, obj2):
