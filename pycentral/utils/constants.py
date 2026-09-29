@@ -20,6 +20,9 @@ Attributes:
 
     SCOPE_URLS (dict[str, str]): Scope-related API URLs for site and device
         organization.
+
+    VALID_DEVICE_FUNCTIONS (list[str]): Device functions accepted by the
+        config-assignments API. VALID_PERSONAS is a deprecated alias.
 """
 
 CLUSTER_BASE_URLS = {
@@ -73,27 +76,38 @@ SCOPE_URLS = {
     "SITE": "sites",
     "SITE_COLLECTION": "site-collections",
     "DEVICE": "devices",
-    "DEVICE_GROUP": "device-collections",
+    "DEVICE_GROUP": "device-groups",
     "ADD_SITE_TO_COLLECTION": "site-collection-add-sites",
     "REMOVE_SITE_FROM_COLLECTION": "site-collection-remove-sites",
     "HIERARCHY": "hierarchy",
+    "GLOBAL": "global",
+    "SITE_BULK": "sites/bulk",
+    "SITE_COLLECTION_BULK": "site-collections/bulk",
     "SCOPE-MAPS": "scope-maps",
+    "CONFIG_ASSIGNMENTS": "config-assignments",
 }
 
-VALID_PERSONAS = [
-    "SERVICE_PERSONA",
-    "HYBRID_NAC",
-    "CORE_SWITCH",
-    "BRIDGE",
-    "CAMPUS_AP",
-    "IOT",
+# Device functions accepted by config-assignments ("ALL" is also accepted).
+VALID_DEVICE_FUNCTIONS = [
     "MOBILITY_GW",
-    "AGG_SWITCH",
     "BRANCH_GW",
     "VPNC",
-    "ACCESS_SWITCH",
+    "CAMPUS_AP",
     "MICROBRANCH_AP",
+    "ACCESS_SWITCH",
+    "SERVICE_PERSONA",
+    "BRIDGE",
+    "IOT",
+    "HYBRID_NAC",
+    "CORE_SWITCH",
+    "AGG_SWITCH",
+    "AOSS_ACCESS_SWITCH",
+    "AOSS_CORE_SWITCH",
+    "AOSS_AGG_SWITCH",
+    "EC_VPNC",
+    "EC_BRANCH_GW",
 ]
+VALID_PERSONAS = VALID_DEVICE_FUNCTIONS  # remove persona in 2.x
 
 __all__ = [
     "CLUSTER_BASE_URLS",
@@ -101,5 +115,6 @@ __all__ = [
     "AUTHENTICATION",
     "GLP_URLS",
     "SCOPE_URLS",
+    "VALID_DEVICE_FUNCTIONS",
     "VALID_PERSONAS",
 ]
