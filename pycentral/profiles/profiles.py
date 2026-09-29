@@ -55,12 +55,8 @@ class Profiles:
             if name:
                 # Append URL-encoded name, replacing it if already present
                 identifier = urllib.parse.quote(name, safe="")
-                path = path.rstrip("/")
-                for suffix in (f"/{name}", f"/{identifier}"):
-                    if path.endswith(suffix):
-                        path = path[: -len(suffix)]
-                        break
-                path = f"{path}/{identifier}"
+                pattern = f"/({re.escape(name)}|{re.escape(identifier)})$"
+                path = f"{re.sub(pattern, '', path.rstrip('/'))}/{identifier}"
             self.set_path(path)
         elif path and not isinstance(path, str):
             raise ParameterError(
@@ -405,10 +401,9 @@ class Profiles:
         # Use the bulk API if bulk_key is set and the path does not end with
         # the profile name/identifier (single operation). The bulk API
         # expects a list of dictionaries, so a dict config is wrapped.
-        if self._is_bulk() and isinstance(self.config_dict, dict):
-            body = {self.get_bulk_key(): [self.config_dict.copy()]}
-        elif self._is_bulk() and isinstance(self.config_dict, list):
-            body = {self.get_bulk_key(): self.config_dict}
+        if self._is_bulk() and isinstance(self.config_dict, (dict, list)):
+            is_list = isinstance(self.config_dict, list)
+            body = {self.get_bulk_key(): self.config_dict if is_list else [body]}
 
         resp = self.central_conn.command(
             "POST", path, api_data=body, api_params=params

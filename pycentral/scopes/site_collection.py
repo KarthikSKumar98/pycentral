@@ -280,12 +280,8 @@ class Site_Collection(ScopeBase):
                 f"Successfully deleted site collection {self.get_name()}"
             )
         else:
-            if "SITE_COLLECTION_HAS_SITES" in str(resp["msg"]):
-                self.central_conn.logger.error(
-                    f"Site collection {self.get_name()} still has sites. Remove them first, e.g. Scopes.delete_site_collection(..., remove_sites=True)."
-                )
             self.central_conn.logger.error(
-                f"Failed to delete site collection {self.get_name()}.\n Error message - {resp['msg']}"
+                f"Failed to delete site collection {self.get_name()} (remove its sites first if any remain).\n Error message - {resp['msg']}"
             )
         return site_collection_deletion_status
 

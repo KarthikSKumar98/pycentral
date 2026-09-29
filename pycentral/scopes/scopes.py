@@ -852,6 +852,11 @@ class Scopes(ScopeBase):
     def get_scope_profiles(self):
         """Fetches all config assignments and records them on the matching scope elements."""
         assignments = get_config_assignments(central_conn=self.central_conn)
+        if assignments is None:
+            self.central_conn.logger.error(
+                "Unable to fetch config assignments; assigned profiles left unchanged"
+            )
+            return
         self.central_conn.logger.info(
             f"Total config assignments fetched from account: {len(assignments)}"
         )

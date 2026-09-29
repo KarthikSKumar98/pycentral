@@ -6,7 +6,7 @@ from urllib.parse import quote
 
 from ..exceptions import ParameterError
 from ..utils import SCOPE_URLS, generate_url
-from ..utils.constants import ALL_DEVICE_FUNCTIONS, VALID_DEVICE_FUNCTIONS
+from ..utils.constants import ALL_DEVICE_FUNCTIONS
 from ..utils.profile_utils import _resolve_device_function
 
 
@@ -40,7 +40,7 @@ def get_config_assignments(
     Returns:
         (list): List of config assignment dicts with keys scope-id, scope-name,
             scope-type, device-function, profile-type and profile-instance.
-            Empty list on failure.
+            None on failure.
     """
     api_params = {
         "scope-id": scope_id,
@@ -57,7 +57,7 @@ def get_config_assignments(
         central_conn.logger.error(
             f"Unable to fetch config assignments. Error code - {resp['code']}.\n Error Description - {resp['msg']}"
         )
-        return []
+        return None
     return resp["msg"].get("config-assignment", [])
 
 
@@ -113,12 +113,12 @@ def delete_config_assignment(
     Returns:
         (dict): Response of the first failed DELETE call, or of the last one
     """
+    base = generate_url(SCOPE_URLS["CONFIG_ASSIGNMENTS"])
     responses = []
     for df in expand_device_function(device_function):
-        segments = (scope_id, df, profile_type, profile_instance)
-        api_path = "/".join(
-            [generate_url(SCOPE_URLS["CONFIG_ASSIGNMENTS"])]
-            + [quote(str(segment), safe="") for segment in segments]
+        api_path = base + "/" + "/".join(
+            quote(str(s), safe="")
+            for s in (scope_id, df, profile_type, profile_instance)
         )
         responses.append(
             central_conn.command(api_method="DELETE", api_path=api_path)
@@ -200,7 +200,7 @@ class ScopeMaps:
             profile_name (str): Name of the profile to be assigned
             persona (str or list, optional): Deprecated alias of device_function.
             device_function (str or list): Device function(s) to be associated
-                with the profile. One or more of VALID_DEVICE_FUNCTIONS, or "ALL".
+                with the profile. One or more of ALL_DEVICE_FUNCTIONS, or "ALL".
 
         Returns:
             (dict): Response of the first failed POST call, or of the last
@@ -231,7 +231,7 @@ class ScopeMaps:
             profile_name (str): Name of the profile to be unassigned
             persona (str or list, optional): Deprecated alias of device_function.
             device_function (str or list): Device function(s) to be unassociated
-                from the profile. One or more of VALID_DEVICE_FUNCTIONS, or "ALL".
+                from the profile. One or more of ALL_DEVICE_FUNCTIONS, or "ALL".
 
         Returns:
             (dict): Response of the first failed DELETE call, or of the last
@@ -257,14 +257,12 @@ class ScopeMaps:
             raise ParameterError("profile_name is required and cannot be empty")
         if not device_function:
             raise ParameterError("device_function is required and cannot be empty")
-        if device_function == "ALL":
-            device_function = ALL_DEVICE_FUNCTIONS
-        elif isinstance(device_function, str):
-            device_function = [device_function]
+        if isinstance(device_function, str):
+            device_function = expand_device_function(device_function)
         action = "assign" if api_method == "POST" else "unassign"
         responses = []
         for df in device_function:
-            if df not in VALID_DEVICE_FUNCTIONS:
+            if df not in ALL_DEVICE_FUNCTIONS:
                 central_conn.logger.error(
                     f"{df} is not a valid device function. Unable to {action} profile {profile_name} for scope {scope_id}"
                 )
@@ -290,6 +288,6 @@ class ScopeMaps:
             responses.append(resp)
         if not responses:
             raise ParameterError(
-                f"No valid device function provided. Valid values: {', '.join(VALID_DEVICE_FUNCTIONS)} or ALL"
+                f"No valid device function provided. Valid values: {', '.join(ALL_DEVICE_FUNCTIONS)} or ALL"
             )
         return next((r for r in responses if r["code"] != 200), responses[-1])

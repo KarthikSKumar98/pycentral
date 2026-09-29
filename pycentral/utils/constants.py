@@ -20,9 +20,6 @@ Attributes:
 
     SCOPE_URLS (dict[str, str]): Scope-related API URLs for site and device
         organization.
-
-    VALID_DEVICE_FUNCTIONS (list[str]): Device functions accepted by the
-        config-assignments API. VALID_PERSONAS is a deprecated alias.
 """
 
 CLUSTER_BASE_URLS = {
@@ -87,28 +84,6 @@ SCOPE_URLS = {
     "CONFIG_ASSIGNMENTS": "config-assignments",
 }
 
-# Device functions accepted by config-assignments.
-VALID_DEVICE_FUNCTIONS = [
-    "MOBILITY_GW",
-    "BRANCH_GW",
-    "VPNC",
-    "CAMPUS_AP",
-    "MICROBRANCH_AP",
-    "ACCESS_SWITCH",
-    "SERVICE_PERSONA",
-    "BRIDGE",
-    "IOT",
-    "HYBRID_NAC",
-    "CORE_SWITCH",
-    "AGG_SWITCH",
-    "AOSS_ACCESS_SWITCH",
-    "AOSS_CORE_SWITCH",
-    "AOSS_AGG_SWITCH",
-    "EC_VPNC",
-    "EC_BRANCH_GW",
-]
-VALID_PERSONAS = VALID_DEVICE_FUNCTIONS  # remove persona in 2.x
-
 # What "ALL" expands to client-side (the API rejects device-function "ALL").
 ALL_DEVICE_FUNCTIONS = [
     "SERVICE_PERSONA",
@@ -124,6 +99,7 @@ ALL_DEVICE_FUNCTIONS = [
     "ACCESS_SWITCH",
     "MICROBRANCH_AP",
 ]
+VALID_PERSONAS = ALL_DEVICE_FUNCTIONS  # remove persona in 2.x
 
 __all__ = [
     "CLUSTER_BASE_URLS",
@@ -131,7 +107,6 @@ __all__ = [
     "AUTHENTICATION",
     "GLP_URLS",
     "SCOPE_URLS",
-    "VALID_DEVICE_FUNCTIONS",
     "VALID_PERSONAS",
     "ALL_DEVICE_FUNCTIONS",
 ]
