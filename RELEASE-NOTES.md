@@ -2,6 +2,8 @@
 
 This release moves scope management to the v1 configuration APIs, replaces scope-maps with config-assignments for profile assignment, fixes local profile parameters, and simplifies the scopes and profiles modules.
 
+Fixes #93, fixes #94, fixes #95.
+
 ### Breaking Changes & Deprecations
 
 - **`persona` renamed to `device_function`**
