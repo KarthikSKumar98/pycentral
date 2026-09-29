@@ -12,6 +12,7 @@ This release moves scope management to the v1 configuration APIs, replaces scope
   - `profile_name` for assignment must be `"<profile-type>/<profile-instance>"` (e.g. `Profiles.get_resource_str()`).
   - `device_function="ALL"` is passed to the API unchanged; Central may reject it depending on a feature flag.
   - `get_scope_profiles` reads library assignments from config-assignments and local profiles from scope-maps (config-assignments has no local view); each entry in `assigned_profiles` has an `object_type` of `LIBRARY` or `LOCAL`.
+  - Local profiles cannot be unassigned; `unassign_profile` logs an error pointing to deleting them via `Profiles(local=...)`.
 - `SCOPE_URLS["DEVICE_GROUP"]` now points to `device-groups` (`device-collections` is not available on v1).
 - `get_all_device_groups` returns `Device_Group` objects instead of dicts, consistent with the other `get_all_*` methods.
 - `move_devices_between_sites` emits a `DeprecationWarning` (it was never implemented).

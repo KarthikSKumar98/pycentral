@@ -121,6 +121,16 @@ class ScopeBase:
         device_function = self._resolve_scope_device_function(device_function)
         if device_function is None:
             return False
+        if operation == "unassign" and any(
+            p["resource"] == profile_name
+            and p["device_function"] == device_function
+            and p.get("object_type") == "LOCAL"
+            for p in getattr(self, "assigned_profiles", [])
+        ):
+            self.central_conn.logger.error(
+                f"'{profile_name}' is a local profile at this scope; it cannot be unassigned. Delete it with Profiles(..., local={{'scope_id': {self.get_id()}, 'device_function': '{device_function}'}}).delete() instead."
+            )
+            return False
         request = (
             create_config_assignment
             if operation == "assign"
