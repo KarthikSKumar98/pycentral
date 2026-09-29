@@ -27,9 +27,13 @@ class Profiles:
                 object.
             config_dict (dict, optional): Dictionary containing API keys & values
                 used to configure the configuration profile.
-            local (dict, optional): A dictionary containing keys scope-id type
-                int and device-function type str required to designate a local profile.
-            path (str, optional): The API path for the profile, omitting base_url/network-config/v1alpha1/.
+            local (dict, optional): Local profile attributes, e.g.
+                {"scope_id": 12345, "device_function": "CAMPUS_AP"}. "persona"
+                is a deprecated alias for "device_function".
+            path (str, optional): The API path for the profile, omitting
+                base_url, ex: "layer2-vlan". If name is provided it is
+                URL-encoded and appended as the last path segment, the same
+                way as url_utils.generate_url(endpoint, identifier=name).
 
 
         Raises:
@@ -77,11 +81,8 @@ class Profiles:
                 "No Central connection provided - set central_conn before making API calls"
             )
 
-        if local and profile_utils.validate_local(local):
-            # Sample Local Data {"scope-id": 12345, "device-function": "CAMPUS_AP"}
-            self.local = profile_utils.validate_local(local)
-        else:
-            self.local = None
+        # Sample Local Data {"scope_id": 12345, "device_function": "CAMPUS_AP"}
+        self.local = profile_utils.validate_local(local) or None
 
     def get_resource_str(self):
         """Return the resource string for the profile.
@@ -270,13 +271,15 @@ class Profiles:
     def set_local_parameters(self, local):
         """Set the local profile parameters for the object.
 
-        Dict provided must have the keys scope-id type int and device-function type str.
-
         Args:
-            local (dict): A dictionary containing keys scope-id type int and device-function
-                type str required to designate a local profile.
+            local (dict): Local profile attributes, e.g.
+                {"scope_id": 12345, "device_function": "CAMPUS_AP"}. "persona"
+                is a deprecated alias for "device_function".
+
+        Raises:
+            ParameterError: If local is invalid.
         """
-        self.local = profile_utils.validate_local(local)
+        self.local = profile_utils.validate_local(local) or None
 
     def get_local_parameters(self):
         """Return required keys/values for local profile API calls.
@@ -285,9 +288,7 @@ class Profiles:
             (dict|None): Local attributes dictionary if self.local is set,
                 otherwise None.
         """
-        if self.local:
-            return profile_utils.validate_local(self.local)
-        return None
+        return dict(self.local) if self.local else None
 
     def _getattrsdict(self, config_attrs):
         """Dynamically retrieve attributes of an object based on provided dictionary.
@@ -372,27 +373,14 @@ class Profiles:
 
         params = self.get_local_parameters()
 
-        if (
-            not hasattr(self, "central_conn")
-            or not self.central_conn
-            and (
-                "path" not in self.object_data.keys()
-                or not self.object_data["path"]
-            )
-        ):
+        if not getattr(self, "central_conn", None) or not self.get_path():
             raise VerificationError(
                 "Create failed - Required attributes missing in Profile. "
                 "Use Profiles.set_path() and Profiles.set_central_conn() to"
                 " ensure central_conn and path are set."
             )
 
-        path = self.object_data["path"]
-
-        if not hasattr(self, "central_conn") or not self.central_conn:
-            raise VerificationError(
-                "Create failed - Central connection required but missing in Profile. "
-                "Use Profiles.set_central_conn() to ensure central_conn and path are set."
-            )
+        path = self.get_path()
 
         if isinstance(self.config_dict, dict):
             body = self.config_dict.copy()
@@ -455,31 +443,18 @@ class Profiles:
         """
         result = False
         response = None
-        if (
-            not hasattr(self, "central_conn")
-            or not self.central_conn
-            and (
-                "path" not in self.object_data.keys()
-                or not self.object_data["path"]
-            )
-        ):
+        if not getattr(self, "central_conn", None) or not self.get_path():
             raise VerificationError(
                 "Get failed - Required attributes missing in Profile. "
                 "Please ensure central_conn and object_data['path'] are set."
             )
         # Name / id may need to be appended to path before calling GET
-        path = self.object_data["path"]
+        path = self.get_path()
         params = self.get_local_parameters()
 
-        # Need to include `view_type` for GET requests
+        # Need to include `view-type` for GET requests
         if params:
-            params.update({"view_type": "LOCAL"})
-
-        if not hasattr(self, "central_conn") or not self.central_conn:
-            raise VerificationError(
-                "Get failed - Central connection required but missing in Profile. "
-                "Please provide a valid Central connection object"
-            )
+            params["view-type"] = "LOCAL"
 
         resp = self.central_conn.command("GET", path, api_params=params)
         if resp["code"] == 200 and "msg" in resp.keys():
@@ -759,8 +734,8 @@ class Profiles:
             bulk_key (str, optional): The key required to wrap the configurations for
                 multiple profiles for the bulk API - refer to the API reference for valid values.
                 ex: "profile" for DNS, "layer2-vlan" for VLANs, etc.
-            local (dict, optional): A dictionary containing keys scope-id type int and
-                device-function type str required to designate a local profile.
+            local (dict, optional): Local profile attributes, e.g.
+                {"scope_id": 12345, "device_function": "CAMPUS_AP"}.
 
         Returns:
             (tuple(bool, dict)): Boolean of operation result, and dict of the create API response.
@@ -828,9 +803,9 @@ class Profiles:
         # defaults to None if local is not provided
         params = profile_utils.validate_local(local)
 
-        # Need to include `view_type` for GET requests
+        # Need to include `view-type` for GET requests
         if params:
-            params.update({"view_type": "LOCAL"})
+            params["view-type"] = "LOCAL"
 
         resp = central_conn.command("GET", path, api_params=params)
 
@@ -863,8 +838,8 @@ class Profiles:
             bulk_key (str, optional): The key required to wrap the configurations for
                 multiple profiles for the bulk API - refer to the API reference for valid values.
                 ex: "profile" for DNS, "layer2-vlan" for VLANs, etc.
-            local (dict): A dictionary containing keys scope-id type int and device-function
-                type str required to designate a local profile.
+            local (dict, optional): Local profile attributes, e.g.
+                {"scope_id": 12345, "device_function": "CAMPUS_AP"}.
 
         Returns:
             (tuple(bool, dict)): Boolean of operation result, and dict of the update API response.
@@ -968,8 +943,8 @@ class Profiles:
             list_dict (list, optional): List of profile configuration dictionaries.
             list_obj (list, optional): List of Profiles objects containing the config_dict
                 attribute.
-            local (dict, optional): A dictionary containing keys scope-id type int and device-function
-                type str required to designate a local profile.
+            local (dict, optional): Local profile attributes, e.g.
+                {"scope_id": 12345, "device_function": "CAMPUS_AP"}.
 
         Returns:
             (tuple(bool, dict)): Boolean of operation result, and dict of the create API response.
@@ -1037,8 +1012,8 @@ class Profiles:
             central_conn (NewCentralBase): Established Central connection object.
             list_dict (list, optional): List of profile configuration dictionaries.
             list_obj (list, optional): List of Profiles objects containing the config_dict attribute.
-            local (dict): A dictionary containing keys scope-id type int and device-function
-                type str required to designate a local profile.
+            local (dict, optional): Local profile attributes, e.g.
+                {"scope_id": 12345, "device_function": "CAMPUS_AP"}.
 
         Returns:
             (tuple(bool, dict)): Boolean of operation result, and dict of the update API response.
