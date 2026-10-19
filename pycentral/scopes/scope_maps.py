@@ -55,7 +55,8 @@ def get_scope_maps(central_conn):
 
     Returns:
         (list): List of scope map dicts with keys scope-id, scope-name, persona
-            and resource ("<profile-type>/<profile-instance>"). None on failure.
+            and resource ("<profile-type>/<profile-instance>", or the bare
+            "<profile-type>" for single-instance profiles). None on failure.
     """
     resp = central_conn.command(
         api_method="GET", api_path=generate_url(SCOPE_URLS["SCOPE-MAPS"])
@@ -82,7 +83,8 @@ def create_config_assignment(
         scope_id (int or str): ID of the scope
         device_function (str): Device function, e.g. "CAMPUS_AP" or "ALL"
         profile_type (str): Profile type, e.g. "layer2-vlan"
-        profile_instance (str or int): Profile instance name, e.g. "100"
+        profile_instance (str or int): Profile instance name, e.g. "100";
+            "" for single-instance profiles (e.g. policy-groups)
 
     Returns:
         (dict): Response of the POST call
@@ -118,7 +120,8 @@ def delete_config_assignment(
         scope_id (int or str): ID of the scope
         device_function (str): Device function, e.g. "CAMPUS_AP" or "ALL"
         profile_type (str): Profile type, e.g. "layer2-vlan"
-        profile_instance (str or int): Profile instance name, e.g. "100"
+        profile_instance (str or int): Profile instance name, e.g. "100";
+            "" for single-instance profiles, which omits the instance segment
 
     Returns:
         (dict): Response of the DELETE call
@@ -126,6 +129,7 @@ def delete_config_assignment(
     api_path = generate_url(SCOPE_URLS["CONFIG_ASSIGNMENTS"]) + "/" + "/".join(
         quote(str(s), safe="")
         for s in (scope_id, device_function, profile_type, profile_instance)
+        if s != ""
     )
     return central_conn.command(api_method="DELETE", api_path=api_path)
 

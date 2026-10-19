@@ -53,7 +53,9 @@ class ScopeBase:
         Args:
             profile_name (str): Profile resource string
                 "<profile-type>/<profile-instance>", e.g. "layer2-vlan/100"
-                (see Profiles.get_resource_str()).
+                (see Profiles.get_resource_str()), or the bare
+                "<profile-type>" for single-instance profiles, e.g.
+                "policy-groups" (some, like policy-groups, are global-only).
             profile_persona (str, optional): Deprecated alias of device_function.
             device_function (str, optional): Device function of the profile,
                 e.g. "CAMPUS_AP" or "ALL". Optional if assigning to a device
@@ -65,6 +67,7 @@ class ScopeBase:
 
         Raises:
             ParameterError: If profile_name is not "<profile-type>/<profile-instance>"
+                or "<profile-type>"
         """
         # remove persona in 2.x
         device_function = _resolve_device_function(
@@ -83,7 +86,10 @@ class ScopeBase:
 
         Args:
             profile_name (str): Profile resource string
-                "<profile-type>/<profile-instance>", e.g. "layer2-vlan/100".
+                "<profile-type>/<profile-instance>", e.g. "layer2-vlan/100",
+                or the bare "<profile-type>" for single-instance profiles.
+                Central rejects unassigning some of these (e.g. policy-groups);
+                its error is logged.
             profile_persona (str, optional): Deprecated alias of device_function.
             device_function (str, optional): Device function of the profile.
                 Optional if unassigning from a device.
@@ -93,6 +99,7 @@ class ScopeBase:
 
         Raises:
             ParameterError: If profile_name is not "<profile-type>/<profile-instance>"
+                or "<profile-type>"
         """
         # remove persona in 2.x
         device_function = _resolve_device_function(
@@ -107,16 +114,20 @@ class ScopeBase:
 
         Args:
             operation (str): "assign" or "unassign"
-            profile_name (str): "<profile-type>/<profile-instance>"
+            profile_name (str): "<profile-type>/<profile-instance>", or
+                "<profile-type>" for single-instance profiles (sent with an
+                empty profile-instance)
             device_function (str or None): Device function of the profile
 
         Returns:
             (bool): True if successful, False otherwise
         """
-        profile_type, _, profile_instance = (profile_name or "").partition("/")
-        if not profile_type or not profile_instance:
+        profile_type, sep, profile_instance = (profile_name or "").partition(
+            "/"
+        )
+        if not profile_type or (sep and not profile_instance):
             raise ParameterError(
-                f"profile_name must be '<profile-type>/<profile-instance>', e.g. 'layer2-vlan/100', got {profile_name!r}"
+                f"profile_name must be '<profile-type>/<profile-instance>' (e.g. 'layer2-vlan/100') or '<profile-type>' for single-instance profiles (e.g. 'policy-groups'), got {profile_name!r}"
             )
         device_function = self._resolve_scope_device_function(device_function)
         if device_function is None:
@@ -195,7 +206,8 @@ class ScopeBase:
         """Helper function that adds a profile to the assigned profiles of the scope in the SDK.
 
         Args:
-            name (str): Profile resource string "<profile-type>/<profile-instance>"
+            name (str): Profile resource string "<profile-type>/<profile-instance>",
+                or "<profile-type>" for single-instance profiles
             persona (str, optional): Deprecated alias of device_function.
             device_function (str): Device function of the profile
             object_type (str, optional): "LIBRARY" or "LOCAL"
@@ -219,7 +231,8 @@ class ScopeBase:
         """Helper function that removes a profile from the assigned profiles of the scope in the SDK.
 
         Args:
-            name (str): Profile resource string "<profile-type>/<profile-instance>"
+            name (str): Profile resource string "<profile-type>/<profile-instance>",
+                or "<profile-type>" for single-instance profiles
             persona (str, optional): Deprecated alias of device_function.
             device_function (str): Device function of the profile
 

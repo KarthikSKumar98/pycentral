@@ -11,7 +11,7 @@ Fixes #93, fixes #94, fixes #95.
   - `persona` still works but emits a `DeprecationWarning` and will be removed in the first non-alpha 2.x release. Passing both raises `ParameterError`.
 - **Scope maps deprecated in favor of config-assignments**
   - `ScopeMaps` emits a `DeprecationWarning`. Profile assignment, unassignment and `get_scope_profiles` now use `network-config/v1alpha1/config-assignments`.
-  - `profile_name` for assignment must be `"<profile-type>/<profile-instance>"` (e.g. `Profiles.get_resource_str()`).
+  - `profile_name` for assignment must be `"<profile-type>/<profile-instance>"` (e.g. `Profiles.get_resource_str()`), or the bare `"<profile-type>"` for single-instance profiles such as `policy-groups` (sent with an empty `profile-instance`). Central only allows `policy-groups` at global and rejects unassigning it; the API's error is logged.
   - `device_function="ALL"` is passed to the API unchanged; Central may reject it depending on a feature flag.
   - `get_scope_profiles` reads library assignments from config-assignments and local profiles from scope-maps (config-assignments has no local view); each entry in `assigned_profiles` has an `object_type` of `LIBRARY` or `LOCAL`.
   - Local profiles cannot be unassigned; `unassign_profile` logs an error pointing to deleting them via `Profiles(local=...)`.

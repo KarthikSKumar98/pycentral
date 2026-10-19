@@ -852,7 +852,8 @@ class Scopes(ScopeBase):
 
         Library assignments come from config-assignments; scope-map rows not
         among them are local profiles. Each entry's object_type is "LIBRARY"
-        or "LOCAL".
+        or "LOCAL". Single-instance profiles (empty profile-instance) use the
+        bare profile type as resource, e.g. "policy-groups", matching scope-maps.
         """
         assignments = get_config_assignments(central_conn=self.central_conn)
         if assignments is None:
@@ -867,7 +868,9 @@ class Scopes(ScopeBase):
             (
                 int(a["scope-id"]),
                 a["device-function"],
-                f"{a['profile-type']}/{a['profile-instance']}",
+                f"{a['profile-type']}/{a['profile-instance']}"
+                if a.get("profile-instance")
+                else a["profile-type"],
             )
             for a in assignments
         ]
@@ -910,7 +913,8 @@ class Scopes(ScopeBase):
 
         Args:
             profile_name (str): Profile resource string
-                "<profile-type>/<profile-instance>", e.g. "layer2-vlan/100".
+                "<profile-type>/<profile-instance>", e.g. "layer2-vlan/100",
+                or "<profile-type>" for single-instance profiles.
             profile_persona (str, optional): Deprecated alias of device_function.
             scope (str, optional): Type of the scope (e.g., global, site, site_collection, device)
             scope_name (str, optional): Name of the scope element.
@@ -946,7 +950,8 @@ class Scopes(ScopeBase):
 
         Args:
             profile_name (str): Profile resource string
-                "<profile-type>/<profile-instance>", e.g. "layer2-vlan/100".
+                "<profile-type>/<profile-instance>", e.g. "layer2-vlan/100",
+                or "<profile-type>" for single-instance profiles.
             profile_persona (str, optional): Deprecated alias of device_function.
             scope (str, optional): Type of the scope (e.g., global, site, site_collection, device)
             scope_name (str, optional): Name of the scope element.
