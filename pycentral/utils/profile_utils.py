@@ -81,11 +81,13 @@ def validate_local(local):
     )
     if not isinstance(scope_id, int) or isinstance(scope_id, bool):
         raise ParameterError(
-            "Invalid local profile attributes. Key 'scope_id' must be of type int."
+            "Invalid local profile attributes. Key 'scope_id' must be of type int "
+            "(use 'scope_id' and 'device_function', not 'scope-id'/'device-function')."
         )
     if not isinstance(device_function, str):
         raise ParameterError(
-            "Invalid local profile attributes. Key 'device_function' must be of type str."
+            "Invalid local profile attributes. Key 'device_function' must be of type str "
+            "(use 'scope_id' and 'device_function', not 'scope-id'/'device-function')."
         )
     return {
         "object-type": "LOCAL",

@@ -36,6 +36,18 @@ class Profiles:
                 URL-encoded and appended as the last path segment, the same
                 way as url_utils.generate_url(endpoint, identifier=name).
 
+        Example:
+            Create VLAN 100 as a local profile on one site (local profiles
+            need the site's scope_id and the device function they apply to):
+
+                vlan = Profiles(
+                    name="100",
+                    path="layer2-vlan",
+                    config_dict={"vlan": 100, "name": "Guest"},
+                    central_conn=central_conn,
+                    local={"scope_id": 12345, "device_function": "ACCESS_SWITCH"},
+                )
+                vlan.create()
 
         Raises:
             ParameterError: If name is provided but not a valid string.
