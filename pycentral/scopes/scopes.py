@@ -105,6 +105,9 @@ class Scopes(ScopeBase):
     def get_all_sites(self):
         """Performs GET calls to retrieve all the sites from Central.
 
+        Rebuilt objects start with empty assigned_profiles; call
+        get_scope_profiles() (get() does) to reload them.
+
         Returns:
             (list): List of Site objects
 
@@ -129,6 +132,9 @@ class Scopes(ScopeBase):
     def get_all_site_collections(self):
         """Performs GET calls to retrieve all the site collections from Central.
 
+        Rebuilt objects start with empty assigned_profiles; call
+        get_scope_profiles() (get() does) to reload them.
+
         Returns:
             (list): List of Site_Collection objects
         """
@@ -149,6 +155,9 @@ class Scopes(ScopeBase):
     def get_all_devices(self):
         """Performs GET calls to retrieve all the devices from Central.
 
+        Rebuilt objects start with empty assigned_profiles; call
+        get_scope_profiles() (get() does) to reload them.
+
         Returns:
             (list): List of Device objects
         """
@@ -168,6 +177,9 @@ class Scopes(ScopeBase):
 
     def get_all_device_groups(self):
         """Performs GET calls to retrieve all the device groups from Central.
+
+        Rebuilt objects start with empty assigned_profiles; call
+        get_scope_profiles() (get() does) to reload them.
 
         Returns:
             (list): List of Device_Group objects
@@ -377,7 +389,7 @@ class Scopes(ScopeBase):
 
     def _find_or_refresh(self, refresh, **kwargs):
         """Finds scope elements; on a miss re-fetches that scope from Central,
-        re-correlates and retries once.
+        re-correlates, reloads assigned profiles and retries once.
 
         Args:
             refresh (callable): Method that re-fetches the scope's elements
@@ -390,6 +402,8 @@ class Scopes(ScopeBase):
         if not found:
             refresh()
             self._correlate_scopes()
+            # refresh() rebuilt the elements with empty assigned_profiles
+            self.get_scope_profiles()
             found = self._find_scope_element(**kwargs)
         return found
 

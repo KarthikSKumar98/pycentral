@@ -1,7 +1,11 @@
 # (C) Copyright 2025 Hewlett Packard Enterprise Development LP.
 # MIT License
 
-from .scope_maps import create_config_assignment, delete_config_assignment
+from .scope_maps import (
+    create_config_assignment,
+    delete_config_assignment,
+    get_config_assignments,
+)
 from ..exceptions import ParameterError
 from ..utils.profile_utils import _resolve_device_function
 from ..utils.scope_utils import (
@@ -132,16 +136,33 @@ class ScopeBase:
         device_function = self._resolve_scope_device_function(device_function)
         if device_function is None:
             return False
-        if operation == "unassign" and any(
-            p["resource"] == profile_name
-            and p["device_function"] == device_function
-            and p.get("object_type") == "LOCAL"
-            for p in getattr(self, "assigned_profiles", [])
-        ):
-            self.central_conn.logger.error(
-                f"'{profile_name}' is a local profile at this scope; it cannot be unassigned. Delete it with Profiles(..., local={{'scope_id': {self.get_id()}, 'device_function': '{device_function}'}}).delete() instead."
+        if operation == "unassign":
+            # config-assignments lists only library assignments, so it is
+            # authoritative; the cached assigned_profiles can be stale or empty.
+            library = get_config_assignments(
+                self.central_conn,
+                scope_id=self.get_id(),
+                device_function=device_function,
+                profile_type=profile_type,
             )
-            return False
+            if library is None:
+                not_library = any(
+                    p["resource"] == profile_name
+                    and p["device_function"] == device_function
+                    and p.get("object_type") == "LOCAL"
+                    for p in getattr(self, "assigned_profiles", [])
+                )
+            else:
+                not_library = not any(
+                    a.get("profile-type") == profile_type
+                    and str(a.get("profile-instance", "")) == profile_instance
+                    for a in library
+                )
+            if not_library:
+                self.central_conn.logger.error(
+                    f"'{profile_name}' is not a library assignment at this scope; if it is a local profile, delete it with Profiles(..., local={{'scope_id': {self.get_id()}, 'device_function': '{device_function}'}}).delete() instead."
+                )
+                return False
         request = (
             create_config_assignment
             if operation == "assign"

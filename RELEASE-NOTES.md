@@ -14,7 +14,7 @@ Fixes #93, fixes #94, fixes #95.
   - `profile_name` for assignment must be `"<profile-type>/<profile-instance>"` (e.g. `Profiles.get_resource_str()`), or the bare `"<profile-type>"` for single-instance profiles such as `policy-groups` (sent with an empty `profile-instance`). Central only allows `policy-groups` at global and rejects unassigning it; the API's error is logged.
   - `device_function="ALL"` is passed to the API unchanged; Central may reject it depending on a feature flag.
   - `get_scope_profiles` reads library assignments from config-assignments and local profiles from scope-maps (config-assignments has no local view); each entry in `assigned_profiles` has an `object_type` of `LIBRARY` or `LOCAL`.
-  - Local profiles cannot be unassigned; `unassign_profile` logs an error pointing to deleting them via `Profiles(local=...)`.
+  - Local profiles cannot be unassigned; `unassign_profile` checks config-assignments first and, if the profile is not a library assignment at that scope, logs an error pointing to deleting it via `Profiles(local=...)` instead of sending a DELETE.
 - `SCOPE_URLS["DEVICE_GROUP"]` now points to `device-groups` (`device-collections` is not available on v1).
 - `get_all_device_groups` returns `Device_Group` objects instead of dicts, consistent with the other `get_all_*` methods.
 - `move_devices_between_sites` emits a `DeprecationWarning` (it was never implemented).
@@ -22,7 +22,7 @@ Fixes #93, fixes #94, fixes #95.
 ### Improvements
 
 - **API versions (#93)**
-  - Sites, site-collections, device-groups, hierarchy, global scope and site-collection add/remove-sites now default to `v1` (their `v1alpha1` endpoints are deprecated). Other configuration APIs stay on `v1alpha1`. An explicit `version=` always wins.
+  - Sites, site-collections, device-groups, hierarchy, global scope, site-collection add/remove-sites now default to `v1` (their `v1alpha1` endpoints are deprecated). Other configuration APIs stay on `v1alpha1`. An explicit `version=` always wins.
   - Site/site-collection updates, bulk deletes, remove-sites (`site-id`) and hierarchy (`id`/`type`) use the v1 request shapes. The global scope ID is read from `network-config/v1/global`.
   - API version validation accepts any well-formed version (`v1`, `v1alpha1`, `v2beta1`, ...) instead of a fixed list.
 - **`generate_url(identifier=...)` (#95)**
@@ -38,7 +38,7 @@ Fixes #93, fixes #94, fixes #95.
 - `Profiles.create/get/update/delete` raise `VerificationError` (not `KeyError`) when the connection or path is missing.
 - `Profiles.get` treats an empty `200` response as not found.
 - Fixed bulk-vs-single path detection for profile names with special characters, `set_config` key validation, and `get_central_conn` without a connection.
-- `find_site_collection` now refreshes site collections (it refreshed sites); lookup maps are rebuilt after every refresh so deleted scopes can no longer be found.
+- `find_site_collection` now refreshes site collections (it refreshed sites); lookup maps are rebuilt after every refresh so deleted scopes can no longer be found, and a `find_*` refresh reloads `assigned_profiles`.
 - Site collections no longer share one `sites`/`assigned_profiles` list across instances.
 - Fixed `Site_Collection` key renaming raising `KeyError` and mutating the caller's data, crashes in `get_hierarchy` by collection name and in `delete_site`/`delete_site_collection`, association with integer site IDs, and malformed error messages.
 - Deleting a site collection that still contains sites logs a clear error instead of failing silently.
