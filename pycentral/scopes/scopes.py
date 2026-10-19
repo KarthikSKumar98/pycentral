@@ -871,7 +871,8 @@ class Scopes(ScopeBase):
             )
             for a in assignments
         ]
-        # ponytail: local profiles come from deprecated scope-maps (config-assignments has no local view); switch when Central adds one
+        # Local profiles come from the deprecated scope-maps API because
+        # config-assignments has no local view; switch once Central adds one.
         scope_maps = get_scope_maps(central_conn=self.central_conn)
         if scope_maps is None:
             self.central_conn.logger.warning(
